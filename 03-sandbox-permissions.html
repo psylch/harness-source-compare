@@ -1,0 +1,86 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>03 · 审批与 OS 隔离：两道不同的边界</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html" class="cur">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>03 · 审批与 OS 隔离：两道不同的边界</h1>
+<div class="pnav">← <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li><strong>都有审批层，但审批不是一个布尔值：</strong> 谁来批、能批到什么粒度、批完能否改参数，各家都不同。</li>
+<li><strong>审批 ≠ 隔离：</strong> “允许运行 npm”说明不了这个进程能不能读到宿主上的密钥。隔离要看 OS 级的文件系统和系统调用限制〔1〕〔2〕〔3〕。</li>
+</ul>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>审批模型</th>
+<th>OS 隔离（默认与平台分支）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>审批枚举 <code>untrusted/on-request/granular/never</code>，<code>on-failure</code> 已是 on-request 的 alias〔4〕</td>
+<td>Linux 当前路线是 bubblewrap + seccomp/no_new_privs；macOS 走 Seatbelt，Windows 有 restricted/elevated 两种 backend〔1〕〔5〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>sandbox-policy 组件默认 read-only；用户 preset 提供 workspace-write+ask、full-access+never 两种。申请更宽的 <code>sandbox_permissions</code> 需要审批，缺少审批服务时 <strong>fail-closed</strong>〔6〕</td>
+<td>Linux runner 链 bwrap→Landlock，macOS Seatbelt，Windows ACL〔7〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td>CLI hook 可以 block 或改参数〔8〕</td>
+<td>默认 shell 实现<strong>直接在本机 spawn 进程</strong>，不是 OS 沙箱；可替换 operations/spawnHook〔2〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>CLI callback 提供 once/session/always/deny/timeout/cancelled，Gateway 另有 approve/deny；middleware/plugin 的 block 转成 tool_error，ACP 编辑审批在其后〔9〕</td>
+<td>默认 terminal backend=local；支持其他 backend，但不能推出“默认隔离”〔10〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>exec 的 ask 默认 off，但会和审批 policy 取更严格的交集；先向 Gateway 注册 <code>exec.approval.request</code> 拿到服务端 ID 再报告 pending，避免审批和注册之间的竞态〔11〕</td>
+<td>sandbox <strong>默认 off</strong>；启用后 backend 默认 docker、workspaceAccess none〔3〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>权限按 action/resource 通配符匹配，最后一条匹配规则生效，没有匹配就 ask；选 always 会存成 project 范围的规则〔12〕</td>
+<td>所核的本地 shell 只有 AST/resource 审批和 spawner，默认 OS 沙箱<strong>未确认</strong>〔13〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】schema 描述里有 <code>default/acceptEdits/bypassPermissions/plan/dontAsk/auto</code> 几种模式，但不能据此认定 auto 是 2.1.197 的默认值；SDK 路径向宿主发 <code>can_use_tool</code> 控制请求〔14〕。【文档】规则可以细到 Bash 命令、Read 路径、WebFetch 域名〔15〕</td>
+<td>【文档】macOS 用 Seatbelt，Linux/WSL2 用 bubblewrap+socat，原生 Windows 不支持这套沙箱〔16〕</td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>企业安全团队：</strong> 比较部署方案时，要记录实际启用的 backend 和 profile，不能给产品贴一个永久的“有沙箱”标签。比如 Codex 在 Linux 上有 OS 级限制，而 pi 默认本地 spawn、OpenClaw sandbox 默认 off〔1〕〔2〕〔3〕。</li>
+<li><strong>Windows 用户：</strong> 隔离能力按平台分支。Claude 文档明确写了原生 Windows 不支持这套沙箱，Codex 和 dsh 在 Windows 上走的是另一套 backend〔16〕〔5〕〔7〕。</li>
+<li><strong>非工程师：</strong> 按 project 范围存的“always”规则（OpenCode）和按会话生效的“session”授权（Hermes），持续时间不同。要让用户能看到当前有哪些放行规则在生效〔12〕〔9〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>拆成两个指标分别度量：<strong>审批负担</strong>（每任务的弹窗次数、误批准率）和<strong>爆炸半径</strong>（批准之后进程能接触到的资源）。</li>
+<li>缺少审批服务时是 fail-closed 还是 fail-open（dsh 是 fail-closed），本身就是一个产品决策点〔6〕。</li>
+<li>审批 UI 的竞态问题：OpenClaw 先注册再报告 pending 的做法，是可以举出来的一个细节〔11〕。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>codex@ce0323f:codex-rs/linux-sandbox/src/lib.rs#L1-L5</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L97-L136</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L215-L224</code></li>
+<li><code>openclaw@21de16f:src/agents/sandbox/config.ts#L221-L231</code></li>
+<li><code>codex@ce0323f:codex-rs/protocol/src/protocol.rs#L1097-L1137</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/sandboxing/mod.rs#L145-L190</code></li>
+<li><code>deepseek-harness@687f282:packages/sandbox/sandbox-policy/src/index.ts#L113-L130</code>；<code>deepseek-harness@687f282:packages/interaction/permission-presets/src/index.ts#L84-L120</code>；<code>deepseek-harness@687f282:packages/sandbox/sandbox/src/escalation.ts#L162-L205</code></li>
+<li><code>deepseek-harness@687f282:packages/sandbox/sandbox-local/src/index.ts#L142-L181</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/settings-manager.ts#L85-L85</code></li>
+<li><code>hermes-agent@18c525b:tools/approval_prompt.py#L20-L54</code>；<code>hermes-agent@18c525b:tools/approval.py#L146-L148</code>；<code>hermes-agent@18c525b:model_tools.py#L754-L800</code></li>
+<li><code>hermes-agent@18c525b:tools/terminal_tool.py#L1-L6</code></li>
+<li><code>openclaw@21de16f:src/agents/bash-tools.exec-run.ts#L302-L345</code>；<code>openclaw@21de16f:src/agents/bash-tools.exec-approval-request.ts#L106-L130</code></li>
+<li><code>opencode@8c173a8:packages/core/src/permission.ts#L87-L100</code>；<code>opencode@8c173a8:packages/core/src/permission.ts#L265-L305</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/shell.ts#L123-L147</code>；<code>opencode@8c173a8:packages/core/src/shell.ts#L292-L307</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L810524-L810524</code>；<code>claude-code@2.1.197:bundle-split.js#L763416-L763416</code></li>
+<li>【文档】<code>claude-code-docs:permissions.md#L95-L146</code></li>
+<li>【文档】<code>claude-code-docs:sandboxing.md#L9-L13</code>；<code>claude-code-docs:sandboxing.md#L55-L58</code></li>
+</ol><hr><div class="pnav">← <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> →</div></main></body></html>

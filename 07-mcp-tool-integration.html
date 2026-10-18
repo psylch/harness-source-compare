@@ -1,0 +1,228 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html" class="cur">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</h1>
+<div class="pnav">← <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div>
+
+<p>（扩展的权限边界见 <a href="12-extensibility-hooks.html">12</a>，工具声明在 prompt 中的位置见 <a href="05-prompt-assembly.html">05</a>。）</p>
+<h2>共识</h2>
+<ul>
+<li><strong>传输方式：</strong> 都支持 stdio 和 Streamable HTTP，Hermes 和 OpenClaw 还支持 SSE〔1〕〔2〕〔3〕〔4〕〔5〕〔6〕。</li>
+<li><strong>命名：</strong> 都会给工具名加 server 前缀并清理字符，超长或冲突时加 hash 或序号；模型看到的名字和真正发给 server 的原名是分开存的〔7〕〔8〕〔9〕〔10〕〔11〕。</li>
+<li>
+<p><strong>工具多了不再全量声明，这一点已经趋同。</strong> 常见做法：</p>
+<ul>
+<li>先给模型一个简短目录，或只给命名空间；</li>
+<li>模型通过 <code>tool_search</code> 或代码里的 <code>search()</code> 找到工具；</li>
+<li>找到后再声明 schema，或者走 describe/call 桥。</li>
+</ul>
+<p>各家的分歧在于触发条件，以及“加载后怎么调用”〔12〕〔13〕〔14〕〔15〕〔16〕〔17〕。</p>
+</li>
+<li>
+<p><strong>MCP 不会获得宿主 system/loop/UI 的权限，</strong> 但多数实现会在调用前走宿主的权限检查〔18〕〔19〕。</p>
+</li>
+</ul>
+<h2>关键差异</h2>
+<p><strong>加载与传输</strong></p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>配置与传输</th>
+<th>默认超时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td><code>mcp_servers</code>，每个 server 可设 <code>startup_timeout_sec</code>、<code>tool_timeout_sec</code>、<code>enabled_tools</code>/<code>disabled_tools</code>、<code>default_tools_approval_mode</code>；分 stdio 和 Streamable HTTP 两种〔1〕</td>
+<td>启动 <strong>30s</strong>，工具调用 <strong>300s</strong>〔1〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>配置在 <code>mcp.servers</code>，全局 <code>mcp.timeout</code> 会被 server 自己的设置覆盖；<code>type: local</code> 用 command 数组启动，远端用 StreamableHTTP〔2〕</td>
+<td>启动和目录各 <strong>30,000ms</strong>，执行 <strong>43,200,000ms（12 小时）</strong>〔2〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td>agentDir 下的 <code>mcp.json</code>；项目里的 <code>.pi/mcp.json</code> <strong>要等项目被信任后才读取</strong>；有 url 用 StreamableHttp，否则用 Stdio〔3〕</td>
+<td>request <strong>60s</strong>；首次 prompt 只等待有 direct 工具的 server，最多 <strong>10,000ms</strong>，其他 server 后台连接〔3〕〔20〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td><code>mcp-client</code> 是 Cordis 插件，每个实例对应一个 server，多个实例写在 <code>cordis.yml</code> 里；<code>failOnStartupError</code> 默认 false，连不上就进入重连循环〔4〕</td>
+<td>toolCallTimeoutMs <strong>60,000ms</strong>〔4〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td><code>config.yaml</code> 的 <code>mcp_servers</code>，支持 <code>${VAR}</code> 展开；HTTP 默认 Streamable，必要时回退 SSE；<code>lazy: true</code> 时首次使用才连接（默认 false）〔5〕〔21〕</td>
+<td>连接 <strong>60s</strong>，工具调用 <strong>300s</strong>〔5〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>servers 是 name→config 映射，支持 stdio、sse、streamable-http〔6〕</td>
+<td>连接 <strong>30,000ms</strong>，请求 <strong>60,000ms</strong>〔6〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【文档】local/user 级配置在 <code>~/.claude.json</code>，project 级在 <code>.mcp.json</code>，键是 <code>mcpServers</code>；交互会话使用 project MCP 前需要用户批准〔22〕</td>
+<td>【bundle】<code>MCP_TIMEOUT</code> 默认 <strong>30,000ms</strong>；<code>MCP_CONNECT_TIMEOUT_MS</code> 默认 <strong>5,000ms</strong>；工具调用默认 <strong>100,000,000ms</strong>，最终 clamp 到 [1000, 2147483647]〔23〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>进入上下文：命名与 schema</strong></p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>命名规则</th>
+<th>description / schema 处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>模型可见的 namespace/name 和原始 server/tool 名分开保存；名字会清理，必要时加 hash，上限 <strong>128 bytes</strong>；<code>prefix_mcp_tool_names</code> 控制是否加 <code>mcp__</code> 前缀，可以按 server 豁免〔7〕</td>
+<td>普通 MCP 工具的 description 不截断；<strong>agent-plugin 专用转换</strong>限 <strong>1,000 UTF-8 bytes</strong>；缺失的 <code>properties</code> 补成空对象〔24〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>namespace 清理到 <code>[A-Za-z0-9_-]</code>；权限 action 是 <code>server_tool</code>〔8〕</td>
+<td>保留 description；inputSchema 缺失时补 object〔8〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td><code>mcp__server__tool</code>，非 <code>[A-Za-z0-9_]</code> 的字符换成 <code>_</code>，超长或冲突加 <strong>8 位</strong> SHA-256 后缀〔9〕</td>
+<td>补 <code>type:object</code> 和缺失的 properties〔9〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td><code>mcp__serverName__rawName</code>，最多 <strong>64</strong> 字符，有损清理时加 <strong>12 hex</strong> 后缀；真正调用时用原名〔10〕</td>
+<td>description、inputSchema、outputSchema 原样交给工具定义，序列化时带 <code>defer_loading</code> 字段〔25〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td><code>mcp__&lt;server&gt;__&lt;tool&gt;</code>，最多 <strong>64</strong> 字符，超长加 <strong>8 hex</strong> hash〔11〕</td>
+<td>去掉 Unicode tags；<code>definitions</code> 转成 <code>$defs</code>，处理 nullable union，修复对象结构〔11〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td><strong><code>server__tool</code></strong>（没有 <code>mcp__</code> 前缀），全名不超过 <strong>64</strong>，冲突时加 <code>-2</code>、<code>-3</code>〔26〕</td>
+<td>metadata 截到 <strong>1,200 UTF-16 units</strong>〔26〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>工具很多时怎么办（延迟加载、检索、codemode）</strong></p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>触发条件</th>
+<th>加载前模型看到什么 → 加载后怎么调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>源码注释写明 tool search “总是启用”，并且<strong>搜索可用时 MCP 工具总是 deferred</strong>，没有数量阈值；旧的 <code>tool_search</code> feature flag 已经是 no-op〔12〕</td>
+<td>搜索用 <strong>BM25</strong>，命中的工具在下一次模型调用时提供；CodeMode 路径把 direct 和 deferred 工具分开收集〔27〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>由配置和权限决定：<code>codemode:false</code> 的工具直接声明，<strong>其余放进 codemode 目录</strong>，和工具数量无关〔13〕</td>
+<td>内联目录预算 <strong>2,000</strong>（按 4 字符 ≈ 1 token 计），description 只取首行、最多 <strong>120</strong> 字符；目录放不下时，提示模型在 <code>execute</code> 里调用 <code>search(...)</code>〔28〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td>MCP exposure <strong>默认 codemode</strong>，还有 <code>deferred</code> / <code>direct</code> / <code>hidden</code>；<code>autoEnableCodemode</code> 默认 true；内置的 <code>tool_search</code> 初始不激活，要显式启用〔14〕</td>
+<td>codemode 只列 server 命名空间，脚本里用 <code>searchTools()</code> 找工具；deferred 工具经 <code>tool_search</code>（BM25，默认 <strong>8</strong> 项）加入 active set，下一轮直接声明〔14〕〔29〕</td>
+</tr>
+<tr>
+<td>pi-durable</td>
+<td><code>tool_search</code> 是独立的 extension，候选范围是 agent 的 deferred 工具〔30〕</td>
+<td>通过 <code>control.addTools</code> 加入工具，<strong>在分支上一直保留，压缩后也保留</strong>；默认 <strong>8</strong> 项〔30〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>配置 <code>mode</code> 二选一：<strong>native（默认）/ ptc</strong>，不按工具数自动切换〔15〕</td>
+<td>native 发送可见的 schema；ptc 只声明 <code>run_code</code>，加上一份按可见工具稳定排序生成的 SDK 说明〔15〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td><code>tools.tool_search</code> 默认 auto，<strong>目前等同 on</strong>：只要有可 deferred 的工具就激活〔16〕</td>
+<td>原生工具数组换成 <code>tool_search</code> / <code>tool_describe</code> / <code>tool_call</code> 三个桥接工具；目录预算为 <code>min(4000 tokens, context×5%)</code>，超预算时从“名称+短描述”退到“只有名称”再退到“分组”；默认搜索 <strong>5</strong> 项，上限 <strong>25</strong>〔16〕〔31〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td><code>tools.toolSearch</code> 没设置时默认启用，mode=tools（另一选项是 directory）〔17〕</td>
+<td>非 directVisible 的工具从可见数组移进 catalog，模型通过 <code>tool_search</code> → <code>tool_describe</code> → <code>dispatch_action</code> 使用；默认搜索 <strong>8</strong>，最多 <strong>20</strong>，硬上限 <strong>50</strong>；codemode 模式只暴露 exec/wait〔17〕〔32〕</td>
+</tr>
+<tr>
+<td>Claude Code【bundle】</td>
+<td><code>ENABLE_TOOL_SEARCH</code> 支持 auto / auto:N / true / false，<strong>未设置时默认启用（tst）</strong>；不是 first-party 的 <code>ANTHROPIC_BASE_URL</code> 和 Vertex 会关闭 optimistic 路径；auto 模式的阈值是 <strong>上下文的 10%</strong>，算不出 token 数时改用字符数，阈值乘 <strong>2.5</strong>〔33〕〔34〕</td>
+<td>已发现的工具从 tool_result 里的 <code>tool_reference</code> 提取，压缩后继承 <code>preCompactDiscoveredTools</code>；用 delta 记录新增和移除的工具〔35〕。【文档】加载前显示工具名和 server instructions（相关上限在 2.1.295/2.1.296 改过，不视为 2.1.197 的值）〔36〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>MCP 调用的权限：</strong>
+- <strong>OpenCode：</strong> 调用前执行 <code>permission.assert</code>〔19〕。
+- <strong>Hermes：</strong> 对 <code>trust: untrusted</code> 的 server，只有 <code>readOnlyHint</code> 严格为 True 的工具免审批，其余先征求一次同意，审批出错就阻止〔18〕。
+- <strong>pi：</strong> 项目信任只控制是否加载项目级 MCP 配置，不等于逐个工具的审批〔3〕。</p>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>重度用户、成本敏感用户：</strong> 接了 10 个 MCP server、几百个工具。Codex、Hermes、OpenClaw、Claude 默认都会延迟加载，pi 默认走 codemode；dsh 默认 native 全量声明，要手动切到 ptc。不切换的话，工具声明会持续占用上下文和缓存前缀〔12〕〔16〕〔17〕〔33〕〔14〕〔15〕。</li>
+<li>
+<p><strong>扩展作者：</strong> 加载后的调用方式不同，工具的可观测性也不同：</p>
+<ul>
+<li>pi、Codex：加载后直接声明，模型像调用原生工具一样调；</li>
+<li>Hermes、OpenClaw：一直经过 call/dispatch 桥。</li>
+</ul>
+<p>日志、权限规则和评测脚本看到的工具名会不一样〔29〕〔27〕〔31〕〔32〕。</p>
+</li>
+<li>
+<p><strong>长任务用户：</strong> 加载过的工具在压缩后还在不在？pi-durable 明确保留，Claude【bundle】继承压缩前已发现的工具。其他家在所核路径上没有确认〔30〕〔35〕。</p>
+</li>
+<li><strong>企业团队：</strong> 超时默认值差异很大，从 dsh/pi 的 60s 到 OpenCode 的 12 小时。长时间运行的 MCP 工具在不同 harness 上会表现为“超时失败”或者“一直挂着”〔4〕〔3〕〔2〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li><strong>工具多了怎么办：</strong> 各家已经趋同到“目录 + 检索 + 按需加载”。真正的产品决策是三件事：触发条件（总是 / 按阈值 / 按配置）、加载后的调用方式（原生声明还是桥接）、压缩后是否保留。</li>
+<li><strong>两类可度量的指标：</strong> 工具检索的命中率和“检索后首次调用成功率”；工具声明占用的上下文比例。</li>
+<li><strong>社区诉求：</strong> pi 用户要求兼容 Claude 的 <code>.mcp.json</code> 和 Stateless MCP；Claude 用户报告 MCP elicitation 被自动拒绝（见 <a href="15-community-pain-points.html">15</a>）。跨 harness 的 MCP 配置兼容是低成本、高收益的 roadmap 项。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>codex@ce0323f:codex-rs/config/src/config_toml.rs#L295-L299</code>；<code>codex@ce0323f:codex-rs/config/src/mcp_types.rs#L266-L288</code>；<code>codex@ce0323f:codex-rs/codex-mcp/src/connection_manager.rs#L394-L429</code>；<code>codex@ce0323f:codex-rs/codex-mcp/src/rmcp_client.rs#L104-L105</code></li>
+<li><code>opencode@8c173a8:packages/core/src/config/plugin/mcp.ts#L37-L55</code>；<code>opencode@8c173a8:packages/core/src/mcp/client.ts#L34-L37</code>；<code>opencode@8c173a8:packages/core/src/mcp/client.ts#L247-L281</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/extensions/mcp/config.ts#L4-L12</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/config.ts#L145-L154</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/runtime.ts#L98-L121</code>；<code>pi@c268154:packages/coding-agent/src/core/mcp-servers.ts#L74-L87</code></li>
+<li><code>deepseek-harness@687f282:packages/mcp/mcp-client/src/index.ts#L1-L11</code>；<code>deepseek-harness@687f282:packages/mcp/mcp-client/src/index.ts#L36-L37</code>；<code>deepseek-harness@687f282:packages/mcp/mcp-client/src/index.ts#L119-L142</code>；<code>deepseek-harness@687f282:packages/mcp/mcp-client/src/index.ts#L178-L202</code></li>
+<li><code>hermes-agent@18c525b:tools/mcp_tool_config.py#L628-L651</code>；<code>hermes-agent@18c525b:tools/mcp_tool_transport.py#L585-L639</code>；<code>hermes-agent@18c525b:tools/mcp_tool.py#L238-L240</code>；<code>hermes-agent@18c525b:tools/mcp_tool_common.py#L41-L58</code></li>
+<li><code>openclaw@21de16f:src/config/types.mcp.ts#L12-L16</code>；<code>openclaw@21de16f:src/agents/mcp-transport-config.ts#L55-L56</code>；<code>openclaw@21de16f:src/agents/mcp-transport-config.ts#L113-L138</code></li>
+<li><code>codex@ce0323f:codex-rs/codex-mcp/src/tools.rs#L105-L149</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/mcp.ts#L14-L17</code>；<code>opencode@8c173a8:packages/core/src/tool/mcp.ts#L40-L48</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/extensions/mcp/tools.ts#L78-L92</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/tools.ts#L288-L297</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/tools.ts#L323-L335</code></li>
+<li><code>deepseek-harness@687f282:packages/mcp/mcp-client/src/tools.ts#L6-L10</code>；<code>deepseek-harness@687f282:packages/mcp/mcp-client/src/tools.ts#L44-L54</code>；<code>deepseek-harness@687f282:packages/mcp/mcp-client/src/tools.ts#L68-L75</code></li>
+<li><code>hermes-agent@18c525b:tools/mcp_tool_schema.py#L119-L144</code>；<code>hermes-agent@18c525b:tools/mcp_tool_schema.py#L166-L193</code></li>
+<li><code>codex@ce0323f:codex-rs/features/src/lib.rs#L264-L267</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool.ts#L225-L262</code>；<code>opencode@8c173a8:packages/core/src/tool/mcp.ts#L36-L48</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/mcp-servers.ts#L43-L61</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/config.ts#L28-L29</code>；<code>pi@c268154:packages/coding-agent/src/extensions/tool-search/index.ts#L1-L14</code></li>
+<li><code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L674-L686</code>；<code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L899-L915</code></li>
+<li><code>hermes-agent@18c525b:tools/tool_search.py#L41-L84</code>；<code>hermes-agent@18c525b:tools/tool_search.py#L112-L118</code>；<code>hermes-agent@18c525b:tools/tool_search.py#L196-L213</code></li>
+<li><code>openclaw@21de16f:src/agents/tool-search-config.ts#L5-L22</code>；<code>openclaw@21de16f:src/agents/tool-search-types.ts#L10-L33</code></li>
+<li><code>hermes-agent@18c525b:tools/mcp_tool_handlers.py#L52-L84</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/mcp.ts#L49-L70</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/extensions/mcp/index.ts#L85-L93</code>；<code>pi@c268154:packages/coding-agent/src/extensions/mcp/index.ts#L1133-L1183</code></li>
+<li><code>hermes-agent@18c525b:tools/mcp_tool_discovery.py#L209-L215</code>；<code>hermes-agent@18c525b:tools/mcp_tool_discovery.py#L260-L283</code></li>
+<li>【文档】<code>claude-code-docs:mcp.md#L536-L544</code>；<code>claude-code-docs:mcp.md#L588-L603</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L575188-L575191</code>；<code>claude-code@2.1.197:bundle-split.js#L579982-L579987</code>；<code>claude-code@2.1.197:bundle-split.js#L580126-L580134</code></li>
+<li><code>codex@ce0323f:codex-rs/tools/src/mcp_tool.rs#L9-L35</code>；<code>codex@ce0323f:codex-rs/tools/src/mcp_tool.rs#L43-L76</code></li>
+<li><code>deepseek-harness@687f282:packages/mcp/mcp-client/src/tools.ts#L124-L142</code>；<code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L1289-L1301</code>；<code>deepseek-harness@687f282:packages/llm/llm-deepseek/src/serialize.ts#L160-L166</code></li>
+<li><code>openclaw@21de16f:src/agents/agent-bundle-mcp-names.ts#L9-L12</code>；<code>openclaw@21de16f:src/agents/agent-bundle-mcp-names.ts#L81-L103</code>；<code>openclaw@21de16f:src/agents/mcp-metadata.ts#L5-L5</code>；<code>openclaw@21de16f:src/agents/mcp-metadata.ts#L45-L59</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/handlers/tool_search_spec.rs#L34-L105</code>；<code>codex@ce0323f:codex-rs/core/src/tools/handlers/tool_search.rs#L253-L282</code>；<code>codex@ce0323f:codex-rs/core/src/tools/spec_plan.rs#L1018-L1056</code></li>
+<li><code>opencode@8c173a8:packages/core/src/codemode/catalog.ts#L48-L71</code>；<code>opencode@8c173a8:packages/core/src/codemode/catalog.ts#L95-L139</code>；<code>opencode@8c173a8:packages/core/src/codemode/instructions.ts#L9-L29</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/extensions/tool-search/tool.ts#L20-L21</code>；<code>pi@c268154:packages/coding-agent/src/extensions/tool-search/tool.ts#L186-L215</code></li>
+<li><code>pi@c268154:packages/durable/src/tool-search/tool-search.ts#L1-L22</code>；<code>pi@c268154:packages/durable/src/tool-search/tool-search.ts#L55-L92</code></li>
+<li><code>hermes-agent@18c525b:tools/tool_search.py#L1-L7</code>；<code>hermes-agent@18c525b:tools/tool_search_catalog.py#L260-L294</code>；<code>hermes-agent@18c525b:tools/tool_search.py#L487-L512</code></li>
+<li><code>openclaw@21de16f:src/agents/tool-search-catalog.ts#L445-L502</code>；<code>openclaw@21de16f:src/agents/tool-search.ts#L283-L293</code>；<code>openclaw@21de16f:src/agents/code-mode.ts#L308-L343</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L553058-L553072</code>；<code>claude-code@2.1.197:bundle-split.js#L553096-L553109</code>；<code>claude-code@2.1.197:bundle-split.js#L677445-L677463</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L677427-L677444</code>；<code>claude-code@2.1.197:bundle-split.js#L677510-L677525</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L677465-L677500</code></li>
+<li>【文档】<code>claude-code-docs:mcp.md#L1456-L1458</code>；<code>claude-code-docs:mcp.md#L1476-L1485</code></li>
+</ol><hr><div class="pnav">← <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div></main></body></html>

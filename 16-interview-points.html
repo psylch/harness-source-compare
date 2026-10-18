@@ -1,0 +1,131 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>16 · 面试可讲的 8 个细节</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html" class="cur">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>16 · 面试可讲的 8 个细节</h1>
+<div class="pnav">← <a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a> · <a href="index.html">总览</a> · <a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a> →</div>
+
+<h2>共识：哪些不值得当差异讲</h2>
+<p>下面几项各家近乎一样，作为产品主张的区分度不高〔1〕〔2〕〔3〕〔4〕〔5〕：
+- 循环骨架；
+- 把 tool result 回填给模型；
+- 用 usage 加尾部估算来计算空间；
+- 用技能目录让模型按需读取正文。</p>
+<p><strong>真正改变同一任务轨迹的是执行语义的细节。</strong></p>
+<h2>关键差异：8 个追问点</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>追问点</th>
+<th>一句话证据</th>
+<th>详见</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>输入在哪个边界生效</strong></td>
+<td>pi/Hermes 在工具批次之后；dsh 把 next-step、next-turn、wake 分开；Codex 在 sampling 之后〔6〕</td>
+<td><a href="01-agent-loop.html">01</a></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>谁有资格并行、冲突域怎么划</strong></td>
+<td>Codex 用读写锁；pi 只要一个 sequential 就整批串行；Hermes 按路径冲突划区段，worker 上限 8〔7〕</td>
+<td><a href="02-tool-execution.html">02</a></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>截断留哪一端、单位是什么</strong></td>
+<td>pi bash 留尾；Codex 头尾各半；Hermes 的 <code>max_bytes</code> 实际按字符切〔8〕</td>
+<td><a href="04-tool-output-shell.html">04</a></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>压缩的触发公式</strong></td>
+<td>pi <code>W−16384</code>；OpenCode 有 16000 的 buffer floor；Claude【bundle】另扣输出预算再减 13000；Codex 分 remote/local〔9〕</td>
+<td><a href="06-context-compaction.html">06</a></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>审批与 OS 隔离分开看</strong></td>
+<td>Codex Linux 用 bwrap/seccomp；dsh 有多平台 runner；pi 在本机 spawn；OpenClaw sandbox 默认 off〔10〕</td>
+<td><a href="03-sandbox-permissions.html">03</a></td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>跨会话学习是一条运行管线</strong></td>
+<td>Codex 两阶段生成，带筛选、lease 和隔离 worker；Hermes 有预算、冻结快照和 curator〔11〕</td>
+<td><a href="08-memory-skills.html">08</a></td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>恢复的单位与副作用边界</strong></td>
+<td>dsh 日志 checkpoint、Codex cold resume、pi-durable 的 task 加 codemode journal，可以叠加但互相替代不了〔12〕</td>
+<td><a href="11-durability-recovery.html">11</a>、<a href="13-pi-durable.html">13</a></td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>扩展的变更权与失败策略</strong></td>
+<td>Codex 的 PreToolUse 和 PermissionRequest 权限不同；pi CLI 和 pi-durable 重校验时机不同；dsh 的 around 只能改 signal，setFactory 可以换 loop；OpenClaw 可以注册 harness；Claude Mods【文档】保护审批显示〔13〕</td>
+<td><a href="12-extensibility-hooks.html">12</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>新增 4 个专题追问：</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>追问点</th>
+<th>详见</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9</td>
+<td>prompt 里稳定段和动态段放在哪，缓存前缀怎么保住</td>
+<td><a href="05-prompt-assembly.html">05</a></td>
+</tr>
+<tr>
+<td>10</td>
+<td>工具很多时怎么处理：延迟加载、tool search、codemode</td>
+<td><a href="07-mcp-tool-integration.html">07</a></td>
+</tr>
+<tr>
+<td>11</td>
+<td>多 agent 的验收与合并由谁负责（代码 gate、hook 还是父模型）</td>
+<td><a href="10-multi-agent-strategies.html">10</a></td>
+</tr>
+<tr>
+<td>12</td>
+<td>怎么用一个指标体系把 harness 改动和“更多人、更多场景、更深入”连起来</td>
+<td><a href="14-evaluation-metrics.html">14</a></td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响</h2>
+<p>每个追问点都对应一类用户的真实情景，例如：
+- 插话不是撤销（长任务用户）；
+- 两分钟没返回不一定是挂了（非工程师）；
+- 两个 worker 同时接管同一会话（扩展作者）。</p>
+<p>详见各层页面的“对不同用户的影响”。</p>
+<h2>面试可讲的点（回答模板）</h2>
+<ol>
+<li><strong>先说共识，再说差异：</strong> “循环都一样，差别在 X 边界。”</li>
+<li><strong>给一个带数字的例子：</strong> 例如“同样 200K 窗口，pi 约 183.6K 触发压缩，Claude 约 167K”（见 <a href="06-context-compaction.html">06</a>）。</li>
+<li><strong>落到用户和指标上：</strong> “这会影响长任务用户的压缩后失败率，我会用灰度 A/B 测阈值。”</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L254-L328</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L575-L604</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L193-L224</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/context_manager/history.rs#L925-L954</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/skills.ts#L358-L385</code>；<code>opencode@8c173a8:packages/core/src/tool/plugin/skill.ts#L47-L66</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L294-L328</code>；<code>hermes-agent@18c525b:agent/agent_runtime_helpers.py#L3758-L3792</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L154-L180</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L589-L604</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L205-L233</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L508-L523</code>；<code>hermes-agent@18c525b:agent/tool_dispatch_helpers.py#L182-L258</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L255-L255</code>；<code>codex@ce0323f:codex-rs/core/src/unified_exec/head_tail_buffer.rs#L5-L19</code>；<code>hermes-agent@18c525b:tools/tool_output_limits.py#L13-L54</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L267-L269</code>；<code>opencode@8c173a8:packages/core/src/session/compaction.ts#L906-L917</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L556251-L556328</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L1546-L1610</code></li>
+<li><code>codex@ce0323f:codex-rs/linux-sandbox/src/lib.rs#L1-L5</code>；<code>deepseek-harness@687f282:packages/sandbox/sandbox-local/src/index.ts#L142-L181</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L97-L136</code>；<code>openclaw@21de16f:src/agents/sandbox/config.ts#L221-L231</code></li>
+<li><code>codex@ce0323f:codex-rs/memories/write/src/start.rs#L20-L91</code>；<code>codex@ce0323f:codex-rs/memories/write/src/phase2.rs#L294-L339</code>；<code>hermes-agent@18c525b:tools/memory_tool_store.py#L222-L253</code>；<code>hermes-agent@18c525b:agent/curator.py#L209-L260</code></li>
+<li><code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L52-L82</code>；<code>codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code>；<code>pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000</code></li>
+<li><code>codex@ce0323f:codex-rs/hooks/src/events/permission_request.rs#L1-L15</code>；<code>pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L1250-L1255</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L173</code>；<code>deepseek-harness@687f282:packages/core/agent/src/index.ts#L349-L368</code>；<code>openclaw@21de16f:src/plugins/plugin-api.types.ts#L377-L389</code>；【文档】<code>claude-code-docs:plugins_mods_overview.md#L68-L83</code></li>
+</ol><hr><div class="pnav">← <a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a> · <a href="index.html">总览</a> · <a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a> →</div></main></body></html>

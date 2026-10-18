@@ -1,0 +1,156 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Harness 源码对比 · 面试精简版</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html" class="cur">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>Agent Harness 源码对比 · 面试精简版</h1>
+<div class="pnav">← <a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a> · <a href="index.html">总览</a></div>
+
+<p><strong>一句话：循环骨架高度收敛，执行语义远未收敛。</strong> “生成→工具调用→结果回填→继续/结束”各家几乎一样；真正改变长任务体验的是：插话在哪个边界生效、哪些工具能同时跑、截断留下哪一端、压缩保留什么、进程消失后恢复的是聊天记录、工作队列还是脚本执行状态。</p>
+<p><strong>版本快照：</strong> Codex <code>ce0323f</code> · OpenCode <code>8c173a8</code> · pi <code>c268154</code> · DeepSeek Harness（dsh）<code>687f282</code> · Hermes <code>18c525b</code> · OpenClaw <code>21de16f</code> · Claude Code <code>2.1.197</code>（闭源）。Claude 条目标注来源：【bundle】= 二进制内字符串，【文档】= 官方文档（厂商说法，且部分描述的是比 2.1.197 更新的版本）。数字均为所列路径的默认值，多数可配置。</p>
+<hr />
+<h2>1. Agent loop：插话的生效边界</h2>
+<ul>
+<li><strong>共识：</strong> 把工具调用和面向人的回答分开，工具结果变成下一次请求的输入；工具边界也是取消、审批、恢复插入的位置。</li>
+<li><strong>最能说明差异的例子：</strong> “支持 steer”在各家含义不同。pi、Hermes 在<strong>工具批次结束后</strong>才把插话交给下一次请求；dsh 拆成三种：<code>steer</code>=下一 step 并唤醒，<code>followup</code>=下一 turn 并唤醒，<code>inject</code>=下一 step 但不唤醒，next-step 整批取、next-turn 最多取一条；Codex 在 sampling 之后处理 pending input。〔<code>pi@c268154:packages/agent/src/agent-loop.ts#L294-L328</code>；<code>hermes-agent@18c525b:agent/agent_runtime_helpers.py#L3758-L3792</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/inbox.ts#L20-L65</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L589-L604</code>〕</li>
+<li><strong>重试计数同样不能直接比：</strong> Hermes 默认 3 是 <strong>attempts</strong>（含首次）；pi 默认 retry 3、起始 2000ms，是失败后的额外尝试；Codex stream 5 / request 4，传输从 WebSocket 降到 HTTPS 后会重置计数。〔<code>hermes-agent@18c525b:agent/agent_init.py#L1441-L1452</code>；<code>pi@c268154:packages/coding-agent/src/core/settings-defaults.ts#L18-L25</code>；<code>codex@ce0323f:codex-rs/model-provider-info/src/lib.rs#L67-L75</code>〕</li>
+<li><strong>PM 结论：</strong> 插话不等于撤销，批次里已写的文件不会回滚。UI 要把“已排队 / 下一步采纳 / 停止当前执行”分开显示。</li>
+</ul>
+<h2>2. 工具并发：并行的资格与冲突域</h2>
+<ul>
+<li><strong>共识：</strong> 工具调用都经过声明→校验→授权/拦截→执行→模型可见结果；“并行”都带顺序约束。</li>
+<li><strong>差异例子：</strong> 模型一次发出三个工具调用。Codex 让 parallel-safe 调用共享读锁、其他调用独占写锁（64 是存活 unified-exec 进程上限，不是工具线程数）。pi 默认并行，但批次里<strong>只要有一个工具声明 sequential，整批串行</strong>。Hermes 按路径冲突划出串行屏障，worker 上限 8。dsh 要求工具显式声明 <code>isConcurrencySafe</code> 才进并行池，默认 10。Claude【bundle】把连续的 concurrency-safe 调用分组并行，默认上限 10。〔<code>codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L205-L233</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L508-L523</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L133-L136</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/constants.ts#L5-L6</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L664199-L664249</code>〕</li>
+<li><strong>PM 结论：</strong> 同一模型、同样三次调用，耗时和文件竞争风险可以不同。“支持并行”要拆成耗时、结果排序、冲突控制三个问题来问。</li>
+</ul>
+<h2>3. 审批与 OS 隔离：两道不同的边界</h2>
+<ul>
+<li><strong>共识：</strong> 都有“是否允许执行”的审批层。</li>
+<li><strong>差异例子：</strong> 用户点了“允许运行 npm”之后，进程能看到什么？Codex 在 Linux 上走 bubblewrap+seccomp；dsh 在 Linux 上依次尝试 bwrap、Landlock，macOS 用 Seatbelt，Windows 用 ACL；pi 默认 shell 直接在本机 spawn；OpenClaw sandbox <strong>默认 off</strong>（启用后默认 docker、workspaceAccess none）；Hermes 默认 local backend。〔<code>codex@ce0323f:codex-rs/linux-sandbox/src/lib.rs#L1-L5</code>；<code>deepseek-harness@687f282:packages/sandbox/sandbox-local/src/index.ts#L142-L181</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L97-L136</code>；<code>openclaw@21de16f:src/agents/sandbox/config.ts#L221-L231</code>；<code>hermes-agent@18c525b:tools/terminal_tool.py#L1-L6</code>〕</li>
+<li><strong>PM 结论：</strong> 不能给产品贴一个永久的“有沙箱”标签。比较部署时要记下实际启用的 backend/profile。</li>
+</ul>
+<h2>4. 工具输出截断：留哪一端、用什么单位</h2>
+<ul>
+<li><strong>共识：</strong> 长输出都会截断，全文多数另存。</li>
+<li>
+<p><strong>差异例子：</strong> 同一份测试日志（开头是配置，中间是失败，结尾是汇总）：</p>
+<ul>
+<li>pi：2000 行或 50KiB，bash <strong>留尾</strong>，全文存临时文件；</li>
+<li>Codex：unified exec 默认 10000 估算 tokens，进程缓冲 1MiB，<strong>头尾各半</strong>；</li>
+<li>Hermes：<code>max_bytes</code> 默认 50000，但实际按<strong>字符</strong>切，头 40% / 尾 60%；</li>
+<li>Claude【bundle】：Bash 默认 30000 字符<strong>留头</strong>，TaskOutput 32000 留尾。
+〔<code>pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L11-L13</code>、<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L255-L255</code>；<code>codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L68-L77</code>、<code>codex@ce0323f:codex-rs/core/src/unified_exec/head_tail_buffer.rs#L5-L19</code>；<code>hermes-agent@18c525b:tools/tool_output_limits.py#L13-L54</code>、<code>hermes-agent@18c525b:tools/tool_output_truncate.py#L12-L32</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L624367-L624375</code>、<code>claude-code@2.1.197:bundle-split.js#L657987-L657993</code>〕</li>
+</ul>
+</li>
+<li>
+<p><strong>PM 结论：</strong> “模型忘了报错”有时是截断策略的问题，不是推理能力的问题。这是可以 A/B 的 harness 参数。</p>
+</li>
+</ul>
+<h2>5. 上下文与压缩：触发公式各不相同</h2>
+<ul>
+<li><strong>共识：</strong> 都用最近一次 provider usage 加上新增内容的本地估算来判断空间，空间不足时摘要较早部分。</li>
+<li>
+<p><strong>差异例子（W=窗口）：</strong></p>
+<ul>
+<li>pi：<code>W−16384</code> 触发，保留近期约 20000 tokens；pi-durable 另在 <code>W−16384−32768</code> 提前后台摘要；</li>
+<li>OpenCode：buffer=<code>max(floor(0.1W), W≥32000 时取 16000)</code>，保留近期 15000；</li>
+<li>dsh：<code>floor(min(0.8W, W−reservedCompletion−65536))</code>；</li>
+<li>Hermes：基础阈值 0.50，窗口 &lt;512000 时至少 0.75；</li>
+<li>Claude【bundle】：<code>W−min(maxOutput,20000)−13000</code>；</li>
+<li>Codex：auto-compact 上限 <code>W×9/10</code>，并按 provider 能力分 remote / local 两条路径。</li>
+</ul>
+<p>代入 W=200K：pi 约 183.6K 触发，OpenCode 180K，Codex 不高于 180K，Claude（maxOutput≥20000 时）167K。〔<code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L267-L269</code>；<code>pi@c268154:packages/durable/src/harness/generation.ts#L327-L337</code>；<code>opencode@8c173a8:packages/core/src/session/compaction.ts#L906-L917</code>；<code>deepseek-harness@687f282:packages/compaction/compaction-basic/src/config.ts#L172-L197</code>；<code>hermes-agent@18c525b:agent/context_compressor.py#L2760-L2816</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L556251-L556328</code>；<code>codex@ce0323f:codex-rs/protocol/src/openai_models.rs#L520-L540</code>〕</p>
+</li>
+<li>
+<p><strong>PM 结论：</strong> “接近上限就总结”预测不了第 90 分钟还剩什么。用户真正关心的是：刚发现的失败证据能否原样读回，摘要什么时候生效。</p>
+</li>
+</ul>
+<h2>6. 记忆：存下来、选出来、再注入是三件事</h2>
+<ul>
+<li><strong>共识：</strong> skill 和记忆都要转成模型可读的内容才生效。技能目录加按需读取正文，是各家通用的做法。</li>
+<li><strong>差异例子：</strong> Codex 有真正的<strong>两阶段后台记忆管线</strong>：默认每次处理 2 个 rollouts，最大 age 10 天，最小 idle 6 小时，unused 30 天，phase1 并发 8，lease 3600s。Hermes 是显式写 <code>MEMORY.md</code> / <code>USER.md</code>（默认 2200 / 1375 chars），写盘后当前会话的 system 快照保持冻结，curator 默认 enabled 但不自动 consolidate。pi、dsh、OpenCode 在所核路径上只确认了技能发现，没确认自动学习。〔<code>codex@ce0323f:codex-rs/memories/write/src/start.rs#L20-L91</code>；<code>codex@ce0323f:codex-rs/config/src/types.rs#L55-L60</code>；<code>hermes-agent@18c525b:tools/memory_tool_store.py#L222-L253</code>、<code>hermes-agent@18c525b:tools/memory_tool_store.py#L618-L621</code>；<code>hermes-agent@18c525b:agent/curator.py#L106-L148</code>〕</li>
+<li><strong>PM 结论：</strong> “已记住”不等于下一次请求的 system 已更新。验收要看下一会话能否正确检索到。</li>
+</ul>
+<h2>7. 子 agent：独立上下文不等于独立文件系统</h2>
+<ul>
+<li><strong>共识：</strong> 子 agent 有独立的消息状态，父 agent 只拿到选择过的结果。</li>
+<li>
+<p><strong>差异例子：</strong> 让 5 个 agent 同时查 5 个模块：</p>
+<ul>
+<li>Codex V2 默认 4 个 slot 且<strong>含父</strong>（V1 是 6 children / depth 1）；</li>
+<li>Hermes 默认并发 10、depth 1；</li>
+<li>dsh 默认 active 8、depth 1；</li>
+<li>OpenClaw 每控制会话并发 8、每父 5 个、depth 5；</li>
+<li>pi 只有示例 extension：8 tasks / 4 并发。</li>
+</ul>
+<p>dsh 的 fork 只复制到上一个<strong>已完成</strong>的 turn，父 agent 刚读到的失败证据不会进入 child。〔<code>codex@ce0323f:codex-rs/core/src/config/mod.rs#L255-L266</code>；<code>hermes-agent@18c525b:tools/delegate_tool_config.py#L17-L27</code>；<code>deepseek-harness@687f282:packages/subagent/subagent/src/index.ts#L187-L197</code>；<code>openclaw@21de16f:src/config/agent-limits.ts#L19-L45</code>；<code>deepseek-harness@687f282:packages/subagent/subagent-fork-in-process/src/index.ts#L40-L77</code>〕</p>
+</li>
+<li>
+<p><strong>PM 结论：</strong> 并发数字只决定调度是否可行，吞吐还受限流、共享工作区和结果长度影响。</p>
+</li>
+</ul>
+<h2>8. 持久化与恢复：保证要落在失败窗口上</h2>
+<ul>
+<li><strong>共识：</strong> 各家都保存有序状态，但每家要防的失败窗口不同。</li>
+<li>
+<p><strong>差异例子：</strong></p>
+<ul>
+<li>dsh：在调用 LLM、顶层 tool 和 pre-step 之前 flush checkpoint，失败就不继续；用 POSIX flock / Windows semaphore 做<strong>跨进程写者锁</strong>；</li>
+<li>Codex：rollout 写入只 flush 不 fsync，daemon handoff 后做 cold resume；</li>
+<li>OpenCode：SQLite inbox，restart 默认 10 次，at-least-once；</li>
+<li>Hermes：执行 tool call 前先 flush，lease 每 60s 刷新；</li>
+<li>pi-durable：<strong>没有跨进程锁</strong>，由宿主保证 single writer。
+〔<code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L52-L82</code>、<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115</code>；<code>codex@ce0323f:codex-rs/rollout/src/recorder.rs#L1915-L1915</code>、<code>codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49</code>；<code>opencode@8c173a8:packages/core/src/session/execution/restart.ts#L23-L61</code>；<code>hermes-agent@18c525b:agent/turn_tool_round.py#L130-L150</code>；<code>pi@c268154:packages/durable/README.md#L688-L688</code>〕</li>
+</ul>
+</li>
+<li>
+<p><strong>PM 结论：</strong> 与其问“有没有 resume”，不如问“外部操作成功、结果还没提交时崩溃怎么办”，这个问题更有区分度。</p>
+</li>
+</ul>
+<h2>9. 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</h2>
+<ul>
+<li><strong>共识：</strong> 扩展点都集中在工具前后、请求前、上下文构造和生命周期事件。</li>
+<li>
+<p><strong>差异例子：</strong> 想给所有写文件工具自动加企业目录前缀：</p>
+<ul>
+<li>Codex：PreToolUse 能改 <code>updated_input</code>，PermissionRequest <strong>不能改参数</strong>；</li>
+<li>pi：CLI 的 <code>tool_call</code> 能改 input 但<strong>不重新校验</strong>，pi-durable 改完会重新 validate；</li>
+<li>dsh：around hook 只能改 signal，args 冻结；但 <code>setFactory</code> 可以整个替换 loop；</li>
+<li>OpenClaw：可以 <code>registerAgentHarness</code>；</li>
+<li>Claude Mods【文档】：能控制 <code>turn.step</code> 和 UI，但不能改 permission prompt 的显示；默认启用要求 CLI 2.1.287。
+〔<code>codex@ce0323f:codex-rs/hooks/src/events/pre_tool_use.rs#L115-L166</code>、<code>codex@ce0323f:codex-rs/hooks/src/events/permission_request.rs#L1-L15</code>；<code>pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L1250-L1255</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L143-L161</code>；<code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L145-L177</code>、<code>deepseek-harness@687f282:packages/core/agent/src/index.ts#L349-L368</code>；<code>openclaw@21de16f:src/plugins/plugin-api.types.ts#L377-L389</code>；【文档】<code>claude-code-docs:plugins_mods_overview.md#L68-L115</code>〕</li>
+</ul>
+</li>
+<li>
+<p><strong>PM 结论：</strong> 真正的“开放度”看这些具体合同，不看插件数量。</p>
+</li>
+</ul>
+<h2>哪些不值得当差异讲</h2>
+<p>以下几点各家基本相同，单独拿出来讲区分度不高：
+- 循环骨架：生成、提取工具调用、执行、回填；
+- 工具结果回填给模型；
+- 用“最近一次 usage 加尾部 chars/4 估算”来计量上下文；
+- 先给技能目录、再按需读正文。</p>
+<p>面试时把篇幅留给上面 9 层里的执行语义。〔<code>pi@c268154:packages/agent/src/agent-loop.ts#L254-L328</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L575-L604</code>；<code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L193-L224</code>；<code>codex@ce0323f:codex-rs/core/src/context_manager/history.rs#L925-L954</code>；<code>pi@c268154:packages/coding-agent/src/core/skills.ts#L358-L385</code>〕</p>
+<p>同一个参数在不同产品里语义可能不同，换算前先确认单位：
+- Hermes 的 <code>max_bytes</code> 实际按字符计；
+- Claude【bundle】MEMORY 上限的 25000 是 JS <code>string.length</code>，不是 UTF-8 字节；
+- OpenClaw 的 bootstrap 预算（单文件 20000 / 总计 60000 chars）是字符数，不是 token。
+〔<code>hermes-agent@18c525b:tools/tool_output_limits.py#L13-L54</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L513732-L513741</code>；<code>openclaw@21de16f:src/agents/embedded-agent-helpers/bootstrap.ts#L87-L95</code>〕</p>
+<hr />
+<h2>面试可讲的 8 个细节</h2>
+<ol>
+<li><strong>插话边界：</strong> steer 是在当前工具前、工具批后，还是下一 turn 生效？pi/Hermes 在批后；dsh 把 next-step、next-turn、wake 拆开。</li>
+<li><strong>并行的资格：</strong> Codex 用读写锁；pi 一个 sequential 就让整批串行；Hermes 按路径冲突划区段。</li>
+<li><strong>截断的方向和单位：</strong> pi bash 留尾，Codex 头尾各半，Hermes 字段叫 <code>max_bytes</code> 实际按字符切。“工具成功了却没看见失败日志”的根因常在这里。</li>
+<li><strong>压缩公式：</strong> pi <code>W−16384</code>；OpenCode 有 16000 的 buffer floor；Claude 另扣输出预算再减 13000；Codex 还分 remote / local。</li>
+<li><strong>审批与隔离是两回事：</strong> 同样点了“允许”，Codex Linux bwrap/seccomp、pi 本机 spawn、OpenClaw 默认关沙箱，进程能看到的文件和系统能力完全不同。</li>
+<li><strong>跨会话学习是一条运行管线，不是一个文件名：</strong> Codex 有带筛选、lease 和隔离 worker 的两阶段生成；Hermes 有预算、冻结快照和 curator。</li>
+<li><strong>恢复的单位：</strong> dsh 日志 checkpoint、Codex cold resume、pi-durable 的 task 加 codemode journal，三者可以叠加，但互相替代不了。</li>
+<li><strong>扩展的变更权与失败策略：</strong> 哪个 hook 能改参数、改完重不重校验、超时后是 fail-closed 还是 fail-open（Hermes pre-tool 超时会阻断，普通 observer 失败则放行）。〔<code>hermes-agent@18c525b:hermes_cli/plugins.py#L1874-L1880</code>〕</li>
+</ol>
+<h2>pi-durable 一段话</h2>
+<p>pi-durable 把对话、任务和程序内的可记录调用放进同一套提交与恢复规则，形成一条可检查的恢复链：
+- <strong>Storage：</strong> 原子 commit，返回 Seq；
+- <strong>task：</strong> 重启时 running 的 task 改回 pending，保留 checkpoint；
+- <strong>工具：</strong> 先提交 intent（<code>{phase:execute}</code>，默认 <code>replay=unsafe</code>）再真正执行。恢复时只有持久策略和当前策略都是 safe 才重跑，否则返回 interrupted；
+- <strong>codemode：</strong> 用 seeded PRNG 和虚拟时钟，nested call 的结果先写 journal 再投递，重跑脚本时复用已完成的结果。</p>
+<p>边界同样明确：
+- <code>requestId</code> 只做同 conversation/type 的<strong>入队去重</strong>，不等于外部操作 exactly-once；
+- 没有跨进程写者锁；
+- SQLite 用 WAL / synchronous NORMAL，JSONL 默认 <code>fsync=false</code>，进程崩溃和断电要分开测试。</p>
+<p>它最适合进程寿命短于任务、一个工具内部含很多调用的场景。〔<code>pi@c268154:packages/durable/src/types.ts#L1047-L1064</code>；<code>pi@c268154:packages/durable/src/harness/scheduler.ts#L291-L310</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code>；<code>pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000</code>；<code>pi@c268154:packages/durable/src/harness/submissions.ts#L169-L188</code>；<code>pi@c268154:packages/chord/src/sqlite/node.ts#L189-L190</code>；<code>pi@c268154:packages/durable/src/storage/jsonl/storage.ts#L257-L307</code>〕</p><hr><div class="pnav">← <a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a> · <a href="index.html">总览</a></div></main></body></html>

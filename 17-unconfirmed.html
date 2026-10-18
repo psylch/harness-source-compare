@@ -1,0 +1,78 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>17 · 证据边界：未能在代码中确认的点</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html" class="cur">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>17 · 证据边界：未能在代码中确认的点</h1>
+<div class="pnav">← <a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a> · <a href="index.html">总览</a> · <a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a> →</div>
+
+<p>“未确认”的意思是这次的源码证据不足，<strong>不能读成“产品不支持”</strong>。</p>
+<h2>共识</h2>
+<ul>
+<li><strong>数字的口径：</strong> 所有数字都是所列路径上的默认值或常量，多数可以配置。</li>
+<li><strong>用户情景的性质：</strong> 是从源码控制流推演出来的，没有跑过跨产品的同任务 bench、故障注入或缓存账单测量，所以不能当作延迟或成功率排名。</li>
+<li>
+<p><strong>Claude Code 有两个证据时点：</strong></p>
+<ul>
+<li>【bundle】是 2.1.197 二进制里的字符串；</li>
+<li>【文档】是 2026-10-18 抓取的官方文档，部分描述的是更新的版本：AGENTS.md 直接读取需要 2.1.277+，Mods 默认启用需要 CLI 2.1.287+，idle compaction 需要 2.1.290+。</li>
+</ul>
+<p>文档里的能力不能反推到 2.1.197〔1〕。</p>
+</li>
+</ul>
+<h2>关键差异：各家未确认项</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>未确认点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>统一的数值 max-steps；所有工具的统一并发上限；通用的输入 requestId 去重和外部 exactly-once；普通安装的插件能否完整替换 loop/UI〔2〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>普通 agent 的统一 max-steps 和工具并发上限；默认的自动个人记忆学习与过期；示例之外的内建 subagent 限制；durable 自定义 adapter 的介质级承诺；JSONL 每个 main commit marker 是否都 fsync〔3〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>主 loop 的统一 maxSteps；edit 的模糊 fallback；默认的自动记忆/技能学习闭环；所有 subagent provider 的返回格式；第三方 UI 合同〔4〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>所核 shell 的默认 OS 沙箱；tool 和 child 的全局数值并发上限；统一的默认 SQLite 文件名；CLAUDE.md 自动 fallback；自动记忆淘汰；公开插件能否整体替换 runner/UI〔5〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>统一的图片尺寸/字节默认值；child 结果在每个分支下的精确包装；公开插件能否整体替换 loop/UI；任意崩溃的工具能否自动续跑〔6〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>跨 embedded/native harness 统一的 max-steps、并发上限、工具收窄和子结果合同；memory dreaming 的默认调度周期和统一 TTL；所有 provider 的缓存 breakpoint 和计量算法〔7〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>2.1.197 主线程固定的 maxTurns；跨 provider 的 reasoning 映射；完整的 PTY 和跨命令环境恢复；统一的图片上限；自动记忆的确定性 expiry；全部 child 结果格式；跨进程 writer 锁；端到端外部幂等〔8〕</td>
+</tr>
+<tr>
+<td>横向</td>
+<td>远程模型服务内部的压缩、服务端缓存命中、网络 effect 的保证，都不在本地源码能证明的范围内</td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响</h2>
+<p>引用这些未确认项时，统一说“未在所核路径确认”，不说“没有”。面试中被追问时，可以说明证据来自哪个快照、哪条路径。</p>
+<h2>面试可讲的点</h2>
+<ol>
+<li>把“我知道什么、证据在哪、哪里还不确定”分开说，本身就是 harness PM 需要的能力。</li>
+<li>Claude 的版本门槛就是一个现成的例子：同一个能力在文档里存在，不代表在某个已安装的版本里存在。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li>【文档】<code>claude-code-docs:memory.md#L361-L362</code>；<code>claude-code-docs:plugins_mods_overview.md#L95-L115</code>；<code>claude-code-docs:prompt-caching.md#L184-L184</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L718-L777</code>；<code>codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L205-L233</code>；<code>codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54</code>；<code>codex@ce0323f:codex-rs/ext/extension-api/src/model_request.rs#L19-L43</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L175-L328</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L642-L654</code>；<code>pi@c268154:packages/coding-agent/src/core/skills.ts#L358-L385</code>；<code>pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L34-L37</code>；<code>pi@c268154:packages/durable/src/storage/jsonl/storage.ts#L257-L307</code></li>
+<li><code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L313-L365</code>；<code>deepseek-harness@687f282:packages/fs/tool-fs/src/edit.ts#L47-L145</code>；<code>deepseek-harness@687f282:packages/skill/skill-filesystem/src/index.ts#L244-L263</code>；<code>deepseek-harness@687f282:packages/subagent/subagent-spawn-in-process/src/index.ts#L35-L53</code></li>
+<li><code>opencode@8c173a8:packages/core/src/shell.ts#L292-L307</code>；<code>opencode@8c173a8:packages/core/src/session/runner/step.ts#L103-L153</code>；<code>opencode@8c173a8:packages/core/src/database/database.ts#L67-L76</code>；<code>opencode@8c173a8:packages/core/src/config/plugin/instruction.ts#L35-L119</code>；<code>opencode@8c173a8:packages/plugin/src/effect/session.ts#L22-L48</code></li>
+<li><code>hermes-agent@18c525b:tools/vision_tools.py#L443-L447</code>；<code>hermes-agent@18c525b:tools/vision_tools.py#L478-L503</code>；<code>hermes-agent@18c525b:tools/delegate_tool.py#L1-L10</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L1828-L1847</code></li>
+<li><code>openclaw@21de16f:src/agents/harness/policy.ts#L33-L60</code>；<code>openclaw@21de16f:extensions/memory-core/index.ts#L296-L322</code>；<code>openclaw@21de16f:extensions/memory-core/src/dreaming.ts#L192-L243</code>；<code>openclaw@21de16f:src/plugins/provider-thinking.types.ts#L6-L19</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L675893-L675911</code>；<code>claude-code@2.1.197:bundle-split.js#L529571-L529625</code>；<code>claude-code@2.1.197:bundle-split.js#L740579-L740620</code></li>
+</ol><hr><div class="pnav">← <a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a> · <a href="index.html">总览</a> · <a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a> →</div></main></body></html>

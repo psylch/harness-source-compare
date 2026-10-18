@@ -1,0 +1,97 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>04 · 工具输出截断与 shell 生命周期</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html" class="cur">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>04 · 工具输出截断与 shell 生命周期</h1>
+<div class="pnav">← <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> · <a href="index.html">总览</a> · <a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li><strong>长输出都会截断，全文多数另存。</strong> 但下面四个量不能互换：模型可见截断、内部缓冲、等多久返回、进程活多久。</li>
+<li><strong>截断策略直接决定模型“看见了什么”。</strong> 留头、留尾和头尾都留，对同一份日志会给出不同的可见内容〔1〕〔2〕〔3〕〔4〕。</li>
+</ul>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness / 路线</th>
+<th>模型可见输出（默认）</th>
+<th>shell 生命周期 / 超时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex unified exec</td>
+<td>默认返回预算 <strong>10000 估算 tokens</strong>，可由参数 <code>max_output_tokens</code> 覆盖；进程缓冲另限 <strong>1024*1024 bytes</strong>，头尾各半〔2〕〔5〕</td>
+<td>interactive 模式可以保留进程供 <code>write_stdin</code> 使用；默认 exec yield <strong>10000ms</strong>，范围 clamp 到 <strong>250..30000ms</strong>，到期不会杀进程。OneShot 默认 timeout <strong>10000ms</strong>〔6〕</td>
+</tr>
+<tr>
+<td>pi bash/read</td>
+<td>通用阈值 <strong>2000 行或 50*1024 bytes</strong>；bash <strong>留尾</strong>并把全文存到临时文件，read <strong>留头</strong>〔1〕〔7〕</td>
+<td>每次调用 spawn 一个新 shell；<strong>没有默认 timeout</strong>；传入值必须是有限正数，换算成毫秒后不能超过 <strong>2147483647</strong>〔8〕</td>
+</tr>
+<tr>
+<td>Hermes terminal</td>
+<td><code>tool_output.max_bytes</code> 默认 <strong>50000</strong>，但实际按<strong>字符</strong>切；头 40% / 尾 60%。read_file 默认 2000 行、单行 2000 字符〔3〕</td>
+<td>LocalEnvironment 默认 persistent=True，但<strong>每次 execute 都是新 bash</strong>，靠环境快照和 cwd marker 保留状态；terminal 默认 <strong>180s</strong>，外层 batch 默认 <strong>420s</strong>〔9〕</td>
+</tr>
+<tr>
+<td>OpenClaw embedded</td>
+<td>live tool result 的硬上限随上下文窗口变化：<strong>16000/32000/64000 chars</strong>，分界点 100000/200000 tokens，再和 <code>context*0.3*4</code> 取最小值；exec 聚合缓冲默认 200000 chars〔10〕</td>
+<td>exec 默认 <strong>1800s</strong>；后台 yield 默认 10000ms，可 clamp 到 10..120000ms。native Codex 路线不适用这些值〔11〕</td>
+</tr>
+<tr>
+<td>Claude Code【bundle】</td>
+<td>Bash 默认 <strong>30000 字符</strong>，上限 <strong>150000</strong>，<strong>留头</strong>；TaskOutput 默认 <strong>32000</strong>，上限 <strong>160000</strong>，<strong>留尾</strong>〔4〕</td>
+<td>Bash 默认 <strong>120000ms</strong>，最大值为 <code>max(600000, default)</code>〔12〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>bash-local 默认 <strong>64000 bytes</strong>；base 装配的 spill 阈值为 <strong>12500 estimated tokens</strong>，全文外置、头尾保留；另有 tool-result-pruner，超过 <strong>8192</strong> code points 时按 4096 头 / 1024 尾裁掉中段〔13〕〔14〕</td>
+<td>普通 bash 每次新 subprocess，默认 <strong>120000ms</strong>、单次上限 <strong>600000ms</strong>，超时可以转后台；另有 persistent PTY，send 默认 30000ms〔15〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>通用默认 <strong>2000 行 / 50KiB 留头</strong>，shell 用同样预算但<strong>留尾</strong>；全文默认保存 <strong>7 天</strong>〔16〕</td>
+<td>每次 create 一个新进程；前台默认 2×60×1000ms，后台设 0 表示无 timeout〔17〕</td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li>
+<p><strong>长任务用户：</strong> 一份测试日志，开头是配置，中间是详细失败，结尾是汇总。</p>
+<ul>
+<li>pi bash 留尾，容易看到最终统计；</li>
+<li>Codex 和 Hermes 头尾都留，还能看到启动配置；</li>
+<li>Claude Bash 留头，中段和尾部要靠后续读取。</li>
+</ul>
+<p>模型“忘了报错”，有时是截断策略造成的〔7〕〔2〕〔3〕〔4〕。</p>
+</li>
+<li>
+<p><strong>非工程师、IDE 用户：</strong> 两分钟没返回，不一定是挂了。Codex 的 yield 到期可能只返回一个 session handle，pi 没传 timeout 时会一直等。UI 要区分“后台仍在运行”和“已超时终止”，否则用户重复点击会重复启动工作〔6〕〔8〕。</p>
+</li>
+<li><strong>成本敏感用户：</strong> OpenClaw 的上限随窗口变化，同一工具换个大窗口模型，可见输出量最多可以差 4 倍（16000 vs 64000 chars）〔10〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>截断方向（头 / 尾 / 头尾）和单位（行 / bytes / 字符 / tokens）是可以 A/B 的参数，主指标可以选“失败信息是否在模型可见范围内”。</li>
+<li>yield ≠ timeout ≠ 进程寿命，状态 UI 要把这三件事区分开。</li>
+<li>Hermes 把字段命名为 <code>max_bytes</code> 实际却按字符计，可以作为“配置语义一致性”的例子来讲〔3〕。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L11-L13</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L78-L80</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L168-L170</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/unified_exec/head_tail_buffer.rs#L5-L19</code></li>
+<li><code>hermes-agent@18c525b:tools/tool_output_limits.py#L13-L54</code>；<code>hermes-agent@18c525b:tools/terminal_tool_result.py#L151-L154</code>；<code>hermes-agent@18c525b:tools/tool_output_truncate.py#L12-L32</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L584666-L584667</code>；<code>claude-code@2.1.197:bundle-split.js#L624367-L624375</code>；<code>claude-code@2.1.197:bundle-split.js#L657987-L657993</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L68-L77</code>；<code>codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L218-L223</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/handlers/unified_exec.rs#L60-L62</code>；<code>codex@ce0323f:codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L293-L301</code>；<code>codex@ce0323f:codex-rs/core/src/exec.rs#L63-L63</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L255-L255</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L22-L42</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L97-L136</code></li>
+<li><code>hermes-agent@18c525b:tools/environments/local.py#L1008-L1030</code>；<code>hermes-agent@18c525b:tools/terminal_tool.py#L753-L753</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L186-L196</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L842-L860</code></li>
+<li><code>openclaw@21de16f:src/agents/tool-result-limits.ts#L6-L40</code>；<code>openclaw@21de16f:src/agents/bash-tools.exec-runtime.ts#L92-L105</code></li>
+<li><code>openclaw@21de16f:src/agents/exec-tool-timeout.ts#L6-L8</code>；<code>openclaw@21de16f:src/agents/bash-tools.exec-run.ts#L126-L134</code>；<code>openclaw@21de16f:extensions/codex/src/conversation-binding.ts#L392-L417</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L657073-L657085</code></li>
+<li><code>deepseek-harness@687f282:packages/shell/bash-local/src/index.ts#L100-L106</code>；<code>deepseek-harness@687f282:packages/spill/spill-policy/src/index.ts#L24-L51</code>；<code>deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L414-L417</code></li>
+<li><code>deepseek-harness@687f282:packages/compaction/compaction-tool-result-pruner/src/config.ts#L6-L37</code>；<code>deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L424-L430</code></li>
+<li><code>deepseek-harness@687f282:packages/shell/bash-local/src/index.ts#L149-L174</code>；<code>deepseek-harness@687f282:packages/shell/tool-bash/src/index.ts#L39-L58</code>；<code>deepseek-harness@687f282:packages/terminal/terminal-bash/src/config.ts#L62-L67</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool-output.ts#L13-L16</code>；<code>opencode@8c173a8:packages/core/src/tool-output.ts#L50-L90</code>；<code>opencode@8c173a8:packages/core/src/tool-output.ts#L129-L135</code>；<code>opencode@8c173a8:packages/core/src/shell.ts#L230-L245</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/shell.ts#L23-L55</code>；<code>opencode@8c173a8:packages/core/src/shell.ts#L292-L307</code></li>
+</ol><hr><div class="pnav">← <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> · <a href="index.html">总览</a> · <a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a> →</div></main></body></html>

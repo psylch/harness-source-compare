@@ -1,0 +1,101 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html" class="cur">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</h1>
+<div class="pnav">← <a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a> · <a href="index.html">总览</a> · <a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li>
+<p><strong>扩展点集中在四类位置：</strong> 工具前后、模型请求前、上下文构造、生命周期事件。</p>
+<ul>
+<li>pi：<code>tool_call</code> / <code>tool_result</code>；</li>
+<li>Codex：PreToolUse；</li>
+<li>OpenCode：<code>execute.before</code> / <code>after</code>；</li>
+<li>Hermes：middleware。</li>
+</ul>
+<p>共同目的都是把业务策略插在副作用和模型之间〔1〕〔2〕〔3〕〔4〕。</p>
+</li>
+<li>
+<p><strong>决定实际权限的是三件事：</strong> 能改什么、改完是否重新校验、出错时 fail-open 还是 fail-closed。</p>
+</li>
+</ul>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>工具参数、拦截与结果</th>
+<th>system / loop / UI 层面</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>PreToolUse 中任何一个 block 都优先；否则取最后完成的 hook 给出的 <code>updated_input</code>。PermissionRequest 可以 allow/deny，任一 deny 优先，<strong>不能替换参数</strong>〔2〕〔5〕</td>
+<td>内部 Rust extension API 可以贡献 MCP/plugin 和 developer policy/context fragments；model request metadata 不能覆盖已有 key；tool lifecycle 对最终 payload 只读〔6〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>extension 的 <code>tool_call</code> 可以改 input，类型注释明确说<strong>不重新校验</strong>；<code>tool_result</code> 可以改 content/details；pi-durable 的 tool hook 之后<strong>会重新 validate</strong>〔1〕〔7〕</td>
+<td><code>before_agent_start</code> 可以改 system；UI 有 select/input/editor/raw terminal 接口；底层 Agent 可以 <code>transformContext</code>、<code>prepareRequest</code>、<code>finishTurn</code>〔8〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>pre hook 可以 allow/deny/ask/cancel；<strong>around execute 只能改 signal，args 冻结</strong>；post hook 可以 replace/enrich/block〔9〕</td>
+<td>system assembly 有 hook，但最终 sections 会恢复；generation request 冻结。<strong><code>setFactory</code></strong> 可以安装一个 agent factory，是真正能替换 loop 的入口，同时只能有一个 provider〔10〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td><code>execute.before</code> 可以改 name/input、可以 block；<code>after</code> 可以改 result/error〔3〕</td>
+<td>session hook 可以改 context/system/messages/tools 和 compaction；在请求 hook 里凭空造出来的 tool schema 不会生成执行器，没注册 executor 的会被丢弃〔11〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>middleware 可以改 args 或 block；追踪被插件改过的 args，对 ACP 的修改 fail-closed；<strong>pre-tool hook 超时 fail-closed，其他 observer 通常 fail-open</strong>〔4〕〔12〕</td>
+<td>plugin 提供的 system sections 会冻结进 prompt〔13〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td><code>before_tool_call</code> 可以改 params、block、requireApproval〔14〕</td>
+<td><code>beforePromptBuild</code> 可以替换 system、context、toolsAllow；API 有 <code>registerControlUiDescriptor</code>、<code>registerContextEngine</code>、<code>registerAgentHarness</code>〔15〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】SDK 的 <code>canUseTool</code> 可以返回 updatedInput，并重新 validate〔16〕；【文档】Mods 的 <code>tool.check</code> 在 rules/settings hooks 之后介入〔17〕</td>
+<td>【文档】Mods 可以加 UI、改 prompt/tool，<code>turn.step</code> 能控制下一次是调模型还是直接无 LLM 回复；<strong>不能改变 permission prompt 的显示</strong>；默认启用要求 CLI <strong>2.1.287</strong> / Desktop <strong>2.1.286</strong>，不能据此认定 2.1.197 已有同等能力〔18〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>MCP 的边界：</strong> MCP 可以远程提供 schema 和执行服务，但不会自动获得修改宿主 system、loop 或 UI 的权力。详见 <a href="07-mcp-tool-integration.html">07 · MCP 与工具接入</a>〔19〕。</p>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>扩展作者：</strong> 想给所有写文件工具自动加企业目录前缀。Codex 用 PreToolUse 可以，用 PermissionRequest 不行；pi CLI 改完不重新校验，pi-durable 会重新校验；dsh 的 around 做不到改参数。选错 hook，就会出现运行时漏控或 schema 不合法〔2〕〔5〕〔1〕〔7〕〔9〕。</li>
+<li><strong>企业团队：</strong> 安全检查服务超时了。Hermes 的 pre-tool hook 会阻断，但普通 observer 失败会放行。配置里要标清楚一个扩展是强制门禁还是尽力记录〔12〕。</li>
+<li><strong>重度用户、成本敏感用户：</strong> 想把“查缓存，命中就直接答”放在模型调用之前。只有 loop 级的控制（pi 的 finishTurn/prepareRequest、dsh 的 setFactory、Claude Mods【文档】的 turn.step）才能真正省掉这次请求；靠 tool 查缓存仍然要先调一次 LLM〔8〕〔10〕〔18〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>“开放度”看的是具体合同：可变性、重新校验的时机、失败策略，不是插件数量。</li>
+<li>扩展 API 正在成为生态之争的焦点：Claude Mods 发布后，dsh 很快做了兼容层。社区信号见 <a href="15-community-pain-points.html">15</a>。</li>
+<li>业务表单和安全审批是两种扩展权限，Claude Mods 文档明确保护了审批的显示〔18〕。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L1250-L1283</code></li>
+<li><code>codex@ce0323f:codex-rs/hooks/src/events/pre_tool_use.rs#L115-L166</code>；<code>codex@ce0323f:codex-rs/core/src/tools/registry.rs#L701-L753</code></li>
+<li><code>opencode@8c173a8:packages/plugin/src/effect/tool.ts#L20-L51</code></li>
+<li><code>hermes-agent@18c525b:model_tools.py#L754-L800</code></li>
+<li><code>codex@ce0323f:codex-rs/hooks/src/events/permission_request.rs#L1-L15</code>；<code>codex@ce0323f:codex-rs/hooks/src/events/permission_request.rs#L120-L165</code></li>
+<li><code>codex@ce0323f:codex-rs/ext/extension-api/src/contributors.rs#L73-L147</code>；<code>codex@ce0323f:codex-rs/ext/extension-api/src/contributors/prompt.rs#L10-L27</code>；<code>codex@ce0323f:codex-rs/ext/extension-api/src/model_request.rs#L19-L43</code>；<code>codex@ce0323f:codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs#L117-L147</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L173</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L933-L937</code>；<code>pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L146-L236</code>；<code>pi@c268154:packages/agent/src/types.ts#L244-L271</code></li>
+<li><code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L145-L177</code>；<code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L601-L605</code>；<code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L1449-L1453</code></li>
+<li><code>deepseek-harness@687f282:packages/core/system-prompt/src/index.ts#L18-L31</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L583-L596</code>；<code>deepseek-harness@687f282:packages/core/agent/src/index.ts#L166-L202</code>；<code>deepseek-harness@687f282:packages/core/agent/src/index.ts#L349-L368</code></li>
+<li><code>opencode@8c173a8:packages/plugin/src/effect/session.ts#L22-L48</code>；<code>opencode@8c173a8:packages/plugin/src/effect/session.ts#L138-L150</code>；<code>opencode@8c173a8:packages/core/src/plugin/hooks.ts#L69-L95</code>；<code>opencode@8c173a8:packages/core/src/session/model-request.ts#L246-L273</code></li>
+<li><code>hermes-agent@18c525b:hermes_cli/plugins.py#L1874-L1880</code></li>
+<li><code>hermes-agent@18c525b:agent/system_prompt.py#L113-L134</code></li>
+<li><code>openclaw@21de16f:src/plugins/hook-before-tool-call-result.ts#L14-L29</code></li>
+<li><code>openclaw@21de16f:src/plugins/hook-before-agent-start.types.ts#L13-L50</code>；<code>openclaw@21de16f:src/plugins/plugin-api.types.ts#L167-L167</code>；<code>openclaw@21de16f:src/plugins/plugin-api.types.ts#L324-L324</code>；<code>openclaw@21de16f:src/plugins/plugin-api.types.ts#L377-L389</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L763416-L763416</code>；<code>claude-code@2.1.197:bundle-split.js#L663926-L663944</code></li>
+<li>【文档】<code>claude-code-docs:plugins_mods_events.md#L184-L199</code></li>
+<li>【文档】<code>claude-code-docs:plugins_mods_overview.md#L15-L23</code>；<code>claude-code-docs:plugins_mods_overview.md#L68-L115</code>；<code>claude-code-docs:plugins_mods_events.md#L247-L265</code></li>
+<li><code>pi@c268154:packages/mcp/src/client.ts#L378-L420</code>；<code>opencode@8c173a8:packages/core/src/tool/mcp.ts#L36-L85</code>；<code>codex@ce0323f:codex-rs/ext/extension-api/src/contributors.rs#L73-L104</code></li>
+</ol><hr><div class="pnav">← <a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a> · <a href="index.html">总览</a> · <a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a> →</div></main></body></html>

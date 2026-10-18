@@ -1,0 +1,104 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>02 · 工具执行：调度、并发、编辑与错误回填</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html" class="cur">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>02 · 工具执行：调度、并发、编辑与错误回填</h1>
+<div class="pnav">← <a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li><strong>五段流水线：</strong> 工具调用普遍经过声明→校验→授权/拦截→执行→模型可见结果。模型输出不是可信的宿主函数调用，所以参数错误或被拒绝时要变成模型能理解的反馈，不能静默丢掉〔1〕〔2〕〔3〕。</li>
+<li>
+<p><strong>“支持并行”都带顺序约束：</strong></p>
+<ul>
+<li>Codex：读写锁；</li>
+<li>pi：<code>Promise.all</code> 按调用原序返回；</li>
+<li>Hermes：划出带串行屏障的区段；</li>
+<li>OpenClaw：区分“执行完成”和“按源顺序提交”。</li>
+</ul>
+<p>并发耗时、结果排序、文件冲突控制是三个不同的维度〔4〕〔5〕〔6〕〔7〕。</p>
+</li>
+</ul>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>调度与并发</th>
+<th>编辑与错误回填</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>tool executor 默认<strong>不并行</strong>，<code>exec_command</code> 明确允许并行；parallel-safe 调用共享读锁，其余独占写锁。<strong>64 是存活 unified-exec 进程上限，不是工具线程数</strong>〔8〕</td>
+<td>freeform <code>apply_patch</code> 的匹配逐级放宽：exact→trim_end→两端 trim→Unicode 标点归一化。普通工具错误包装成 failure response，只有 Fatal 才向上抛并终止〔9〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td>默认 parallel；批次里只要有一个工具声明 <code>executionMode=sequential</code>，<strong>整批串行</strong>。edit/write 对同一路径排队，这是进程内锁，管不到其他 shell 或进程〔10〕</td>
+<td>edit 先 exact，再做归一化模糊匹配；也可以用 write 重写整个文件。durable 版本在 hook 之后重新校验，被拒绝的调用写成错误结果〔11〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>工具必须 <code>isConcurrencySafe(args)===true</code> 才进并行池，缺省、异常或无效参数一律走 exclusive barrier；默认并发 <strong>10</strong>，<code>agent-loop.maxParallelToolCalls</code> 可改〔12〕</td>
+<td>edit 是 literal 的 <code>old_string/new_string</code>，<code>replace_all=false</code>，要求唯一匹配；执行前先记录 fs/edit-intent 和 observed version，再原子 <code>editText</code>。超时返回 <code>isError</code> 和 <code>TOOL_TIMEOUT</code>，未启动就被取消的调用补一条 synthetic result〔13〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>完整 tool-call 的 durable publication 完成后，<code>forkScoped</code> 执行，最后 join；这个位置没看到固定上限或 safe/exclusive 白名单〔14〕</td>
+<td>先 exact，再做标点/空格归一化并忽略行尾空白；保留 LF/CRLF；多处匹配且未设 replaceAll 时拒绝。用户拒绝时附带的 feedback 可以形成 CorrectedError〔15〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>parallel-safe 区段内并发，同路径 reader 之间可以重叠，writer 冲突形成屏障；worker 上限 <strong>8</strong>，<code>image_generate</code> 有更小的专用限额〔6〕〔16〕</td>
+<td><strong>9 级</strong> fallback 链：exact→line_trimmed→whitespace_normalized→indentation_flexible→escape_normalized→trimmed_boundary→unicode_normalized→block_anchor→context_aware；出现多个近似匹配时，即使 replace_all 也拒绝〔17〕</td>
+</tr>
+<tr>
+<td>OpenClaw embedded</td>
+<td>默认 parallel，按源顺序提交结果；该层统一上限未确认〔7〕〔18〕</td>
+<td>先做 NFKC、trimEnd 和引号/破折号/空格归一化再找精确片段，用 grapheme source map 映射回原文，拒绝不安全的边界〔19〕</td>
+</tr>
+<tr>
+<td>Claude Code【bundle】</td>
+<td>连续的 concurrency-safe 调用分组并行，默认上限 <strong>10</strong>，可用正数 <code>CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY</code> 覆盖〔3〕</td>
+<td>Edit 使用 <code>old_string/new_string/replace_all=false</code>，内容相同、找不到、未允许的多处匹配都会拒绝，并尝试恢复 Unicode escape；权限 handler 改写 input 后重新校验 schema，不合法时返回 tool_result 错误〔20〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>schema 声明语言也不同，影响的是扩展作者拿到的静态类型和报错时机：</strong>
+- pi：TypeBox <code>TSchema</code>，可声明 <code>outputSchema</code>；
+- Hermes：JSON Schema dict，替换内置工具需要显式 override；
+- OpenClaw：exec 参数用 <code>Type.Object</code> 声明〔21〕。</p>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>长任务用户：</strong> 模型同时发出“读 A、读 B、跑测试”。Codex 按锁的类型决定能否并发；pi 只要测试工具声明了 sequential 就整批串行；Hermes 看路径是否冲突。wall time 和文件竞争风险都会不同〔4〕〔10〕〔6〕。</li>
+<li><strong>扩展作者：</strong> 自定义工具没声明并发安全时，dsh 默认把它当 exclusive，pi 默认并行。同一个工具从一个 harness 迁到另一个，并发语义会变〔12〕〔10〕。</li>
+<li><strong>IDE 用户：</strong> “fuzzy edit”不是一种东西。Hermes 9 级链、OpenClaw 的 NFKC 加 source map、dsh 的 literal 唯一匹配，在格式化差异下成功率和误改风险都不同〔17〕〔19〕〔13〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>并行要拆成三个问题：谁有资格并行（opt-in 还是 opt-out）？冲突域按什么划（锁、路径、整批）？结果按什么顺序提交？</li>
+<li>“编辑失败率”是可以直接度量的 harness 指标，可以按匹配级别埋点，看最终是哪一级 fallback 成功的。</li>
+<li>错误要“回填给模型”还是“终止 turn”，决定了 agent 能否自我纠正。Codex 只有 Fatal 才终止〔9〕。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>codex@ce0323f:codex-rs/tools/src/tool_spec.rs#L18-L58</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L172</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L664199-L664249</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L205-L233</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L642-L654</code></li>
+<li><code>hermes-agent@18c525b:agent/tool_dispatch_helpers.py#L182-L258</code></li>
+<li><code>openclaw@21de16f:packages/agent-core/src/agent-loop.ts#L611-L665</code></li>
+<li><code>codex@ce0323f:codex-rs/tools/src/tool_executor.rs#L122-L124</code>；<code>codex@ce0323f:codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L135-L137</code>；<code>codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L68-L77</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/handlers/apply_patch.rs#L62-L66</code>；<code>codex@ce0323f:codex-rs/apply-patch/src/seek_sequence.rs#L34-L85</code>；<code>codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L102-L119</code></li>
+<li><code>pi@c268154:packages/agent/src/agent.ts#L253-L253</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L508-L523</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/file-mutation-queue.ts#L4-L61</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/tools/edit-diff.ts#L202-L243</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L143-L161</code></li>
+<li><code>deepseek-harness@687f282:packages/core/tools/src/index.ts#L268-L281</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/constants.ts#L5-L6</code></li>
+<li><code>deepseek-harness@687f282:packages/fs/tool-fs/src/edit.ts#L47-L56</code>；<code>deepseek-harness@687f282:packages/fs/tool-fs/src/edit.ts#L85-L145</code>；<code>deepseek-harness@687f282:packages/guard/timeout-policy/src/index.ts#L41-L47</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/tool-calls.ts#L83-L99</code></li>
+<li><code>opencode@8c173a8:packages/core/src/session/runner/step.ts#L103-L153</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/edit.ts#L24-L39</code>；<code>opencode@8c173a8:packages/core/src/tool/plugin/edit.ts#L49-L124</code>；<code>opencode@8c173a8:packages/core/src/session/runner/step.ts#L205-L230</code>；<code>opencode@8c173a8:packages/core/src/permission.ts#L265-L305</code></li>
+<li><code>hermes-agent@18c525b:agent/tool_executor.py#L133-L136</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L225-L250</code></li>
+<li><code>hermes-agent@18c525b:tools/fuzzy_match.py#L288-L323</code>；<code>hermes-agent@18c525b:tools/fuzzy_match.py#L394-L430</code></li>
+<li><code>openclaw@21de16f:packages/agent-core/src/agent.ts#L359-L359</code></li>
+<li><code>openclaw@21de16f:src/agents/sessions/tools/edit-diff.ts#L26-L43</code>；<code>openclaw@21de16f:src/agents/sessions/tools/edit-diff.ts#L304-L352</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L624866-L624866</code>；<code>claude-code@2.1.197:bundle-split.js#L667748-L667825</code>；<code>claude-code@2.1.197:bundle-split.js#L663926-L663944</code></li>
+<li><code>pi@c268154:packages/agent/src/types.ts#L466-L485</code>；<code>hermes-agent@18c525b:tools/registry.py#L709-L728</code>；<code>openclaw@21de16f:src/agents/bash-tools.schemas.ts#L26-L43</code></li>
+</ol><hr><div class="pnav">← <a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> →</div></main></body></html>

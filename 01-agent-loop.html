@@ -1,0 +1,101 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>01 · Agent loop：step、插话与重试</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html" class="cur">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>01 · Agent loop：step、插话与重试</h1>
+<div class="pnav">← <a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a> · <a href="index.html">总览</a> · <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li><strong>骨架相同：</strong> 把可执行调用和面向人的回答分开，工具结果作为下一次模型请求的输入。工具执行是宿主的副作用，所以工具边界也是取消、审批、恢复能插入的位置〔1〕〔2〕〔3〕。</li>
+<li><strong>“流式”不等于“每个 token 都能重新决策”：</strong> pi 把 text/thinking/toolcall delta 作为事件发出，但要等工具批次完成才读下一批 steering；Codex 在 sampling 或工具完成后才处理异步 hooks 和 pending input〔4〕〔5〕。</li>
+</ul>
+<p>术语：本系列把一次 provider 请求叫 <strong>step</strong>，把从用户输入开始、可能包含多个 step 的工作段叫 <strong>turn/run</strong>。各库的 <code>turn_end</code> 不一定指同一个边界〔1〕〔6〕。</p>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>step、停止与插话</th>
+<th>轮数上限与重试默认</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td><code>run_turn</code> 循环 sampling；模型调用工具续轮或有 pending input 都会继续；空闲时还要过 Stop hooks，hook 可以带提示词要求继续；steer 在后续 step 被 drain〔7〕</td>
+<td>loop 内未确认统一的数值 max-steps。stream retries <strong>5</strong>、request retries <strong>4</strong>，可分别配置，上限 <strong>100</strong>；特性开启时部分连接失败可以无界重试，等待 <strong>5s→倍增→60s</strong>；stream 重试耗尽后可从 WebSocket 降到 HTTPS 并重置计数〔8〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>每次 drain 都重载 durable history，runStep 发一次显式 <code>llm.stream</code>；prompt 默认 steer，先 admit 再 wake，<code>resume:false</code> 只入箱；忙时只投 steer，空闲时取一条 queue〔9〕</td>
+<td>只有配置了 <code>agent.info.steps</code> 才限步；到上限的最后一步保留 tool schema、<code>toolChoice=none</code> 并要求总结。普通重试最多 <strong>10</strong> 次，指数退避从 2s 起、单次上限 10s、带 jitter；<code>Retry-After</code> 最多按 <strong>15min</strong> 作为最小等待；transport timeout 另计，最多 <strong>3</strong> 次〔10〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>内层循环处理工具和 steering，外层在本该结束时取 follow-up；两种队列默认 <code>one-at-a-time</code>；<code>finishTurn</code> 可以 end/continue；输出因 length 截断的调用参数全部按失败处理，不执行〔11〕</td>
+<td>核心 loop 未确认数值 max-steps。coding-agent 默认 retry <strong>3</strong>、base <strong>2000ms</strong>、指数 <code>base*2^(attempt-1)</code>、上限 <strong>60000ms</strong>；上下文溢出单独处理，<strong>只做一次</strong> compact-and-retry〔12〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>turn/start→pre-step→step/start→prepare→stream→assistant/message→tools→step/end。<code>steer</code>=next-step 并唤醒，<code>followup</code>=next-turn 并唤醒，<code>inject</code>=next-step 但不唤醒；next-step 整批取，next-turn 最多取一条〔13〕</td>
+<td>主 loop 的统一 maxSteps 未确认，pre-step 可以拒绝继续。可选 retry 插件默认 normal：<strong>5</strong> retries、500ms 起、上限 10000ms、jitter 0.1〔14〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>prepare→assemble→preflight→API attempts→normalize→工具 round 或文本完成；<code>/steer</code> 在工具 batch 之后追加新的 user 消息，不改已存的 tool result〔15〕</td>
+<td>默认 <code>max_iterations=sys.maxsize</code>。<code>agent.api_max_retries</code> 默认 <strong>3 次 attempt</strong>（含首次，设 1 就是只试一次）；fallback 后自动恢复周期默认 <strong>5</strong>；退避 base <strong>2s</strong>、上限 <strong>60s</strong>〔16〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>自有 <code>agent-core</code> 的工具 / pending-message loop 在边界处理取消；切到 <code>AgentHarnessV2</code> 的 Codex 路线后实际发的是 <code>turn/start</code>〔17〕</td>
+<td>embedded session retry 默认 <strong>3</strong>、base <strong>2000ms</strong>，不是所有 provider/fallback 的总次数〔18〕</td>
+</tr>
+<tr>
+<td>Claude Code【bundle】</td>
+<td>async generator <code>while(true)</code>；没有工具调用时，仍可能因输出耗尽、thinking-only 或 Stop hook 继续；工具执行后提取 <code>priority=next</code> 且属于本 agent 的消息；Stop hook 连续阻止默认上限 <strong>8</strong>〔19〕</td>
+<td>只有传入 truthy 的 <code>maxTurns</code> 才检查。普通 retry 默认 <strong>10</strong>，<code>CLAUDE_CODE_MAX_RETRIES</code> 最多 <strong>15</strong>；退避 <code>min(500*2^(attempt-1),32000)</code> 加 <strong>0–25%</strong> jitter；persistent 分支另行等待〔20〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>provider 抽象也有差异：</strong>
+- <strong>Codex：</strong> <code>WireApi</code> 在此快照只接受 <code>responses</code>，reasoning 要经过 <code>resolve_reasoning_effort</code> 映射〔21〕。
+- <strong>pi：</strong> Anthropic adapter 按模型选 disabled、adaptive+effort 或 enabled+<code>budget_tokens</code>，最后一种未传值时默认 <strong>1024</strong>〔22〕。
+- <strong>dsh：</strong> 它用的 pi-ai adapter 显式设 <code>maxRetries:0</code>，避免 SDK 重试和 harness 重试叠加〔23〕。</p>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>长任务重度用户、IDE 用户：插话不是撤销。</strong> 工具批次正在改文件时，用户说“先停，只检查”。pi/Hermes 的 steer 一般在批次边界之后才影响下一次请求，已经写入的文件不会回滚〔24〕。</li>
+<li><strong>成本敏感用户：attempt、retry、recovery cycle 是三个不同的计数器。</strong> 同样配成“3”，Hermes 包含首次调用，pi 指失败后的额外尝试，Codex 还有传输降级后的计数重置〔16〕〔25〕〔8〕。</li>
+<li><strong>非工程师：“再加一页预算”被发了两次。</strong> dsh 的 inject 不唤醒 agent，OpenCode <code>resume:false</code> 只入箱。集成方如果把“已收到”写成“已开始”，用户就容易重复发送〔13〕〔9〕。</li>
+<li><strong>企业团队：</strong> OpenClaw 切到 Codex harness 后，审批、steer、恢复可能横跨 Gateway 和 Codex app-server。排查问题时要先记录实际走的 harness 路线〔17〕〔18〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>把“实时”拆成三个问题来问：画面多久刷新一次？用户消息多久被模型看到？正在跑的工具会不会被取消？</li>
+<li>输入确认的状态机至少要有 4 个状态：已排队 / 下一步采纳 / 下一 turn 采纳 / 已停止当前执行。</li>
+<li>重试默认值不能横向直接比，要先统一口径：是否包含首次调用、是按 stream 还是按 request 计、降级后是否重置。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L254-L321</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L575-L604</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L675848-L675911</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L412-L454</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L294-L321</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L589-L604</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L286-L321</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L578-L604</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L454-L465</code>；<code>codex@ce0323f:codex-rs/core/src/session/turn.rs#L718-L777</code></li>
+<li><code>codex@ce0323f:codex-rs/model-provider-info/src/lib.rs#L67-L75</code>；<code>codex@ce0323f:codex-rs/model-provider-info/src/lib.rs#L499-L509</code>；<code>codex@ce0323f:codex-rs/core/src/responses_retry.rs#L93-L165</code></li>
+<li><code>opencode@8c173a8:packages/core/src/session/runner/llm.ts#L166-L198</code>；<code>opencode@8c173a8:packages/core/src/session/session.ts#L145-L175</code>；<code>opencode@8c173a8:packages/core/src/session/inbox.ts#L490-L549</code></li>
+<li><code>opencode@8c173a8:packages/core/src/session/runner/llm.ts#L226-L246</code>；<code>opencode@8c173a8:packages/core/src/session/runner/max-steps.ts#L1-L16</code>；<code>opencode@8c173a8:packages/core/src/session/runner/retry.ts#L31-L90</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L175-L328</code>；<code>pi@c268154:packages/agent/src/agent.ts#L247-L253</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/settings-defaults.ts#L18-L25</code>；<code>pi@c268154:packages/ai/src/utils/retry.ts#L139-L145</code>；<code>pi@c268154:packages/coding-agent/src/core/agent-session.ts#L3049-L3074</code></li>
+<li><code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L154-L180</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L297-L397</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/inbox.ts#L20-L65</code></li>
+<li><code>deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L313-L365</code>；<code>deepseek-harness@687f282:packages/llm/llm/src/retry-policy.ts#L14-L57</code>；<code>deepseek-harness@687f282:packages/llm/llm/src/retry-policy.ts#L149-L190</code>；<code>deepseek-harness@687f282:packages/llm/llm-retry/src/index.ts#L123-L137</code></li>
+<li><code>hermes-agent@18c525b:agent/conversation_loop.py#L1650-L1699</code>；<code>hermes-agent@18c525b:agent/agent_runtime_helpers.py#L3758-L3792</code></li>
+<li><code>hermes-agent@18c525b:run_agent.py#L238-L245</code>；<code>hermes-agent@18c525b:agent/agent_init.py#L1441-L1452</code>；<code>hermes-agent@18c525b:agent/turn_recovery.py#L1401-L1431</code></li>
+<li><code>openclaw@21de16f:packages/agent-core/src/agent-loop.ts#L229-L255</code>；<code>openclaw@21de16f:extensions/codex/src/conversation-binding.ts#L392-L417</code></li>
+<li><code>openclaw@21de16f:src/agents/sessions/settings-manager.ts#L383-L396</code>；<code>openclaw@21de16f:src/agents/harness/policy.ts#L33-L60</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L675734-L675806</code>；<code>claude-code@2.1.197:bundle-split.js#L675848-L675911</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L751740-L751785</code>；<code>claude-code@2.1.197:bundle-split.js#L751837-L751861</code>；<code>claude-code@2.1.197:bundle-split.js#L675893-L675911</code></li>
+<li><code>codex@ce0323f:codex-rs/model-provider-info/src/lib.rs#L107-L130</code>；<code>codex@ce0323f:codex-rs/core/src/client.rs#L802-L836</code></li>
+<li><code>pi@c268154:packages/ai/src/models.ts#L1047-L1059</code>；<code>pi@c268154:packages/ai/src/api/anthropic-messages.ts#L1280-L1309</code></li>
+<li><code>deepseek-harness@687f282:packages/llm/llm-pi-ai/src/adapter.ts#L126-L143</code></li>
+<li><code>pi@c268154:packages/agent/src/agent-loop.ts#L266-L301</code>；<code>hermes-agent@18c525b:agent/agent_runtime_helpers.py#L3758-L3792</code></li>
+<li><code>pi@c268154:packages/ai/src/utils/retry.ts#L192-L199</code></li>
+</ol><hr><div class="pnav">← <a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a> · <a href="index.html">总览</a> · <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> →</div></main></body></html>

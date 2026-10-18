@@ -1,0 +1,139 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>13 · pi-durable：从一次用户提交到 codemode 恢复</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html" class="cur">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>13 · pi-durable：从一次用户提交到 codemode 恢复</h1>
+<div class="pnav">← <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> →</div>
+
+<h2>共识</h2>
+<ul>
+<li><strong>核心做法：</strong> pi-durable 把对话、任务和程序内可记录的调用放进<strong>同一套提交与恢复规则</strong>，四个环节连成一条可检查的恢复链：<ul>
+<li>Storage 原子 commit；</li>
+<li>running 的 task 重启后改回 pending；</li>
+<li>工具先提交 intent 再执行；</li>
+<li>codemode 的结果先写 journal 再投递〔1〕〔2〕〔3〕〔4〕。</li>
+</ul>
+</li>
+<li><strong>和其他家的关系：</strong> “先存后显示”其他家也有（见 <a href="11-durability-recovery.html">11</a>）。pi-durable 更突出的地方有两点：把这些边界统一成可恢复的 task/document 模型；把 codemode 程序的调用序列纳入回放。</li>
+<li><strong>它和 pi coding-agent 的会话树是两个包，存储合同也不同。</strong> 它也不是 CLI 上给所有会话自动打开的一个开关〔1〕〔5〕。</li>
+</ul>
+<h2>关键差异：逐层边界</h2>
+<table>
+<thead>
+<tr>
+<th>边界</th>
+<th>实际数据与调用顺序</th>
+<th>能保证 / 不能保证</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Storage 接口</td>
+<td><code>commit(writes)</code> 原子接受一组 StorageWrite，返回 Seq；Session 用 promise tail 串行执行 commit；SQLite 有 conversations / entries / tasks / submissions / documents / document_revisions 等表〔1〕〔6〕〔5〕</td>
+<td>原子性是 adapter 必须兑现的合同；Session 串行不等于跨进程互斥〔7〕</td>
+</tr>
+<tr>
+<td>输入去重</td>
+<td>按 conversation/requestId 查已有的 submission：同 type 返回原 ID 并忽略新 payload，type 冲突则抛错；durable inbox 记录 queued steer/followUp，默认 followUp〔8〕</td>
+<td>浏览器重试只会入队一次；同一 ID 改了文本也<strong>不会</strong>更新旧提交；不覆盖模型请求的计费和外部 effect〔8〕〔3〕</td>
+</tr>
+<tr>
+<td>task / generation</td>
+<td>scheduler 启动时把 running task 转为 pending 并保留 checkpoint；generation 分别检查 prepare / request / retryWait / poll / tools 几个阶段；最终 assistant message 和后续 tool tasks 在同一个 commit 里建立〔2〕〔9〕</td>
+<td>恢复的是显式持久化的状态机，不是整个 JS 堆或网络 socket〔10〕</td>
+</tr>
+<tr>
+<td>先存后显示</td>
+<td><code>#runCommit</code>：settle writes→<strong>await storage.commit</strong>→<code>tx.adopt(seq)</code>→<code>#publish</code>；partial generation 默认 <strong>100ms</strong> 节流，同一时间只有一个 commit in-flight〔11〕</td>
+<td>committed 事件消费者看到的状态已被 adapter 接受；“每个 token 都立即落盘”不成立〔11〕</td>
+</tr>
+<tr>
+<td>tool intent 与重试</td>
+<td>参数验证→hooks→<strong>再次验证</strong>→先 commit <code>{phase:execute, arguments, replay}</code>，默认 <code>replay=unsafe</code>，然后才执行；恢复时只有持久策略和当前策略<strong>都是 safe</strong> 才重跑，否则返回 interrupted〔3〕</td>
+<td>safe 是工具作者声明可以重试，不是框架证明“只执行了一次”；外部服务的幂等 key 仍然需要</td>
+</tr>
+<tr>
+<td>codemode 启动 checkpoint</td>
+<td>先生成 seed/now，把 version、tools、namespaces、globals、store、deadline 和 start 一起 commit；重启时已有 done 就直接复用；版本或 deadline 不兼容则拒绝继续〔12〕</td>
+<td>脚本可以从头重新执行到已知边界，前提是恢复环境和调用轨迹兼容</td>
+</tr>
+<tr>
+<td>确定性与 journal</td>
+<td>VM 提供 seeded PRNG、虚拟时钟和 WASI random_get，环境固定为 UTC；比对调用 fingerprint、name/args、issuedAfter，按记录顺序投递结果；结果先 commit 到 journal 再 deliver〔13〕</td>
+<td>已完成的 nested call 按 journal 复用，未完成的仍按 safe/unsafe 策略处理；并发调用的完成顺序也会被记录</td>
+</tr>
+<tr>
+<td>fork / 分支</td>
+<td>fork 以 <code>entry.commitSeq</code> 作为 asOf；agent doc 可以 rewind，provider doc 用 initial 重新生成 ID〔14〕</td>
+<td>fork 不会撤销已经发生的外部副作用</td>
+</tr>
+<tr>
+<td>单写者与介质</td>
+<td>README 明确要求 single writer、没有跨进程锁；SQLite 使用 WAL + synchronous NORMAL；JSONL 默认 <code>fsync=false</code>〔7〕〔15〕</td>
+<td><strong>不能声称 pi-durable 已有跨进程单写者锁，也不能声称所有 commit 都已 fsync</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>与其他三种恢复路线的取舍：</strong></p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>首先解决的体验</th>
+<th>不应因此承诺的能力</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>dsh 日志为准</td>
+<td>重建模型可见历史，动作前 flush，恢复时补 closers，用 OS 写者锁防竞争〔16〕</td>
+<td>不自动回滚外部操作，不等于 codemode 的 journal 回放</td>
+</tr>
+<tr>
+<td>Codex daemon</td>
+<td>跨重启交接符合条件的 interrupted turn〔17〕</td>
+<td>cold resume 不保存外部程序或工具栈，remote 环境被排除</td>
+</tr>
+<tr>
+<td>Claude checkpoint【文档】</td>
+<td>按 prompt 节点回退对话和被跟踪的文件改动〔18〕</td>
+<td>不跟踪所有 Bash 编辑，不是外部操作的 undo</td>
+</tr>
+<tr>
+<td>pi-durable / codemode</td>
+<td>持久 task 和程序调用 journal 衔接起来〔3〕〔4〕</td>
+<td>没有内建跨进程锁；requestId 去重 ≠ effect exactly-once；fork ≠ 撤销现实世界</td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>长任务重度用户：</strong> 脚本并行读 200 份报表，读到第 160 份时进程崩溃。如果前面的 nested results 已经提交到 journal，重跑时会直接消费旧结果再继续；只做聊天 resume 的实现恢复不了脚本里的局部变量〔4〕〔13〕。</li>
+<li><strong>企业团队：</strong> 工具作者把“创建工单”错误地标成 safe，恢复时可能会重复建单〔3〕。</li>
+<li><strong>成本敏感用户：</strong> 代价同样具体：checkpoint/journal 写入更多，流式显示要等 commit，回放要求代码、指纹和调用顺序兼容，unsafe 的未完成工具可能要人工核对〔11〕〔12〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>它最适合<strong>进程寿命短于任务</strong>、一个模型工具内部含很多调用的场景；pi-durable 也提供 Cloudflare adapter〔1〕〔5〕。</li>
+<li>进程崩溃恢复和突然断电要分开测：SQLite NORMAL 和 JSONL <code>fsync=false</code> 提供的是不同的承诺〔15〕。</li>
+<li>常见的误读要纠正：
+   - “同 requestId 不会重复执行”应该说成“同 conversation/type 的提交只入队一次”；
+   - “有单写者锁”不成立〔8〕〔7〕。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>pi@c268154:packages/durable/src/types.ts#L1047-L1154</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/scheduler.ts#L291-L310</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code></li>
+<li><code>pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000</code></li>
+<li><code>pi@c268154:packages/durable/src/storage/sqlite/schema.ts#L9-L19</code>；<code>pi@c268154:packages/durable/src/storage/sqlite/node.ts#L14-L22</code>；<code>pi@c268154:packages/durable/src/storage/jsonl/node.ts#L5-L12</code></li>
+<li><code>pi@c268154:packages/durable/src/session/session.ts#L225-L232</code>；<code>pi@c268154:packages/durable/src/session/session.ts#L854-L861</code></li>
+<li><code>pi@c268154:packages/durable/README.md#L688-L688</code>；<code>pi@c268154:packages/durable/src/session/session.ts#L854-L861</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/submissions.ts#L169-L220</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/generation.ts#L136-L261</code>；<code>pi@c268154:packages/durable/src/harness/generation.ts#L593-L618</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/scheduler.ts#L1329-L1374</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/agent.ts#L57-L73</code>；<code>pi@c268154:packages/durable/src/session/session.ts#L691-L779</code>；<code>pi@c268154:packages/durable/src/harness/generation.ts#L388-L445</code>；<code>pi@c268154:packages/durable/src/harness/agent.ts#L27-L36</code></li>
+<li><code>pi@c268154:packages/durable/src/codemode/codemode.ts#L399-L468</code>；<code>pi@c268154:packages/durable/src/codemode/codemode.ts#L444-L456</code></li>
+<li><code>pi@c268154:packages/codemode/src/runtime/vm.ts#L84-L120</code>；<code>pi@c268154:packages/codemode/src/runtime/execution.ts#L520-L555</code>；<code>pi@c268154:packages/durable/src/codemode/codemode.ts#L610-L727</code></li>
+<li><code>pi@c268154:packages/durable/src/session/forks.ts#L25-L97</code>；<code>pi@c268154:packages/durable/src/harness/agent.ts#L41-L51</code>；<code>pi@c268154:packages/durable/src/harness/provider.ts#L12-L20</code></li>
+<li><code>pi@c268154:packages/chord/src/sqlite/node.ts#L189-L190</code>；<code>pi@c268154:packages/durable/src/storage/jsonl/storage.ts#L257-L307</code>；<code>pi@c268154:packages/durable/src/env/node.ts#L1021-L1030</code>；<code>pi@c268154:packages/durable/src/env/node.ts#L1059-L1070</code></li>
+<li><code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L29-L82</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115</code></li>
+<li><code>codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54</code>；<code>codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49</code>；<code>codex@ce0323f:codex-rs/core/src/session/daemon_recovery.rs#L23-L56</code></li>
+<li>【文档】<code>claude-code-docs:checkpointing.md#L13-L22</code>；<code>claude-code-docs:checkpointing.md#L55-L56</code>；<code>claude-code-docs:checkpointing.md#L70-L97</code></li>
+</ol><hr><div class="pnav">← <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> →</div></main></body></html>

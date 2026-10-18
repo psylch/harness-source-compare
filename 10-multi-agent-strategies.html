@@ -1,0 +1,179 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>10 · 多 agent 策略：从 Kimi /tower 到各家编排</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html" class="cur">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>10 · 多 agent 策略：从 Kimi <code>/tower</code> 到各家编排</h1>
+<div class="pnav">← <a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a> · <a href="index.html">总览</a> · <a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a> →</div>
+
+<p>（各 harness 内建子 agent 的默认值见 <a href="09-subagents.html">09</a>。本页证据分级：<strong>[源码]</strong> 带 <code>repo@sha:path#行号</code>；<strong>【文档】</strong> 是官方文档或 changelog，属于厂商说法；<strong>[社区]</strong> 是 X 帖子或 issue，只代表发帖人的经验。Kimi 源码快照为 <code>MoonshotAI/kimi-code@18c6d64</code>，<code>…/</code> 表示 <code>packages/agent-core-v2/src/features/</code> 之下的路径。）</p>
+<h2>共识</h2>
+<ul>
+<li><strong>子 agent 用独立上下文，默认不继承对话</strong>，fork 作为可选项。Claude Code、Cursor、OpenCode、pi-agents、Manus 默认 fresh〔1〕〔2〕。</li>
+<li><strong>交付物就是子 agent 的最后一条消息。</strong> Claude Code、Kimi worker、dsh 都明确写了“最终消息就是全部交接”〔3〕。</li>
+<li><strong>后台运行加完成通知，禁止轮询。</strong> OpenCode、Kimi tower、pi-agents 的提示词或机制里都写了“不要 sleep 或 poll”〔2〕〔4〕。</li>
+<li><strong>深度和并发都有上限</strong>，但数值各不相同：深度 1–5，并发 4–20，扇出最多 128。</li>
+</ul>
+<h2>关键差异</h2>
+<h3>Kimi <code>/tower</code>：把 PR 流程写进代码 [源码]</h3>
+<ul>
+<li><strong>入口：</strong> 需要实验开关，加上 <code>/tower on</code>。只有主 agent 能进入 tower 模式，同一工作区同一时间只能有一个 live session 拥有 tower；和 plan / swarm / goal 三种模式互斥〔5〕。</li>
+<li><strong>角色：</strong> tower 自己不写 mission 代码；worker 的工具白名单里<strong>没有</strong> <code>TowerSpawn</code> 和 <code>TowerMerge</code>，所以不能派工、不能合并〔6〕。</li>
+<li><strong>mission 模型：</strong> 字段包括 <code>kind</code>（build/survey）、<code>scope</code>（glob）、<code>branch</code>、<code>worktree</code>、<code>deps</code>、<code>status</code>、<code>tasks[]</code>；用户原话放进 <code>context</code>，不塞整段对话〔7〕。</li>
+<li><strong>隔离：</strong> 先拿分支租约，再 <code>addWorktree</code>；bash guard 对解析不了的危险命令<strong>一律拒绝</strong>〔8〕。</li>
+<li>
+<p><strong>merge gate（由代码执行）会拒绝以下情况：</strong></p>
+<ul>
+<li>mission 未完成，或还有未完成的 task / blocker；</li>
+<li>worker 状态未知（“unknown 不等于 idle”）；</li>
+<li>分支落后于 base；</li>
+<li>最近一次 review 不 clean；</li>
+<li>review 之后又有新提交；</li>
+<li>改动超出 mission scope。</li>
+</ul>
+<p>每个 reviewer 最多 <strong>5 轮</strong>〔9〕。</p>
+</li>
+<li>
+<p><strong>并发：</strong> 预算上限 <code>TOWER_MAX_BUDGET = 16</code>；遇到限流时每 2 秒减 1、最低减到 1，180 秒后恢复〔10〕。</p>
+</li>
+<li><strong><code>/swarm</code> 是另一回事：</strong> 用模板加 <code>{{item}}</code> 扇出，<strong>最多 128 个</strong>子 agent，没有 worktree、merge gate 和 review 闭环，是 map 式的并行〔11〕。</li>
+</ul>
+<h3>各家对照</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Kimi <code>/tower</code></th>
+<th>Claude Code【文档】</th>
+<th>Codex v2 [源码]</th>
+<th>OpenCode [源码]</th>
+<th>dsh [源码+文档]</th>
+<th>pi-agents [文档]</th>
+<th>Hermes [源码]</th>
+<th>OpenClaw [源码]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>拓扑</td>
+<td>星形 + inbox，带 reviewer</td>
+<td>星形可嵌套；teams 是 lead + peer mailbox</td>
+<td>树，路径寻址，可互发消息</td>
+<td>星形</td>
+<td>星形；team 是 peer + 任务 DAG</td>
+<td>星形 + DAG graph + peer 消息</td>
+<td>树</td>
+<td>树 + announce 链</td>
+</tr>
+<tr>
+<td>子 agent 默认看到什么</td>
+<td>代码生成的 briefing + mission context</td>
+<td>fresh（带 CLAUDE.md、git status）；fork 继承全部</td>
+<td><strong><code>fork_turns=all</code> 继承全部</strong></td>
+<td>fresh，或用 sessionID 续接</td>
+<td>fresh / fork 两种 provider</td>
+<td>只看 job</td>
+<td>按 toolset 和角色</td>
+<td>默认隔离，可 <code>context:"fork"</code></td>
+</tr>
+<tr>
+<td>并发上限（默认）</td>
+<td>16，动态收缩</td>
+<td>20 个同时运行</td>
+<td>每 session 4（含父）</td>
+<td>未见上限</td>
+<td>team 16 人</td>
+<td>固定限额</td>
+<td>10，满了直接拒绝</td>
+<td>每会话 8，每 agent 5</td>
+</tr>
+<tr>
+<td>深度</td>
+<td>1</td>
+<td>3</td>
+<td>1</td>
+<td>1</td>
+<td>可配置</td>
+<td>2</td>
+<td>1，无硬顶</td>
+<td>5</td>
+</tr>
+<tr>
+<td>文件冲突</td>
+<td><strong>强制 worktree + 租约 + scope gate</strong></td>
+<td>可选 <code>isolation: worktree</code></td>
+<td>spawn 路径无 worktree 逻辑</td>
+<td>只靠提示词</td>
+<td><strong>明确拒绝自动 worktree</strong></td>
+<td>无</td>
+<td>可选 worktree，默认关</td>
+<td>可选 <code>worktree</code> 参数</td>
+</tr>
+<tr>
+<td>验收</td>
+<td>代码 gate + 独立 reviewer</td>
+<td>teams 可用 hook 打回</td>
+<td>父级判断</td>
+<td>父级判断</td>
+<td>Lead 负责集成</td>
+<td>父级</td>
+<td>父级</td>
+<td>父级</td>
+</tr>
+</tbody>
+</table>
+<p>引用：〔5〕–〔11〕 Kimi；〔12〕 Claude；〔13〕 Codex；〔2〕 OpenCode；〔14〕 dsh；〔15〕 pi-agents；〔16〕 Hermes；〔17〕 OpenClaw。</p>
+<p><strong>真正的分歧有四个：</strong></p>
+<ul>
+<li><strong>默认上下文：</strong><ul>
+<li>fresh：父级必须写好 brief，省 token；</li>
+<li>继承全部（Codex v2）：子 agent 立刻懂背景，但成本随父上下文增长；</li>
+<li>代码生成 brief（Kimi tower）：介于两者之间，可以审计〔13〕〔7〕。</li>
+</ul>
+</li>
+<li><strong>文件冲突由谁负责：</strong><ul>
+<li>harness 强制（tower）；</li>
+<li>可选隔离（Claude、Hermes、OpenClaw）；</li>
+<li>有意不管（dsh 文档论证 branch 命名、merge 策略、cleanup 都属于部署层的决定）〔14〕。</li>
+</ul>
+</li>
+<li><strong>“完成”由谁判定：</strong> 代码 gate、hook gate（Claude teams 中 <code>TaskCompleted</code> 返回退出码 2 可以打回）、或者父模型自己判断〔9〕〔12〕。</li>
+<li><strong>通信拓扑：</strong> 只回父级，还是 peer mailbox。pi-agents 明确不设跳数上限，“两个被告知持续交谈的 agent 会一直聊到你停下其中一个”〔15〕。</li>
+</ul>
+<h2>对不同用户的影响</h2>
+<ul>
+<li><strong>独立开发者，在一个仓库里并行写功能：</strong> tower 最接近“交给一个 tech lead”，但 token 消耗大；Claude 加 <code>isolation: worktree</code> 更轻；Codex 子 agent 默认共享工作区。</li>
+<li><strong>调研、review、排查：</strong> Claude subagents/teams、Cursor Explore、Manus Wide Research 更合适，不需要 worktree。Manus 官方自己列出的不适用场景是“有顺序依赖的任务”和“少于 10 项”〔18〕。</li>
+<li><strong>大批量同构任务：</strong> Kimi swarm（最多 128 个）〔11〕。</li>
+<li><strong>自己搭 harness 的工程师：</strong> dsh 的 provider 可插拔，可以把真实的 Codex 或 Claude Code 当 worker；pi-agents 提供 durable 和 DAG〔14〕〔15〕。</li>
+<li><strong>社区经验 [社区]：</strong><ul>
+<li>“同时跑超过 2 个子 agent，几乎必然是烧 token 换不来质量”；</li>
+<li>“1 个 orchestrator 配 1 个 executor 目前最好”；</li>
+<li>tower 用户反馈规划、隔离执行、review、修复、再 review 这一套“消耗非常快”〔19〕〔20〕。</li>
+</ul>
+</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>多 agent 的瓶颈已经从“能不能并行”变成“怎么验收、怎么合并、怎么看得见”。tower 用代码 gate 兜底，dsh 公开论证不在团队层做 worktree，这是两种产品哲学。</li>
+<li>默认上下文的选择直接影响 issue 里“token 失控”问题出现的频率（Codex 默认继承全部 vs Claude 默认 fresh 但 fork 共享缓存）〔13〕〔12〕。</li>
+<li>可以讲的指标：子 agent 交付的首次合并率（gate 首次通过率）、review 轮数、每个 mission 的 token、死亡与 resume 的比例、因 scope 越界被拒的次数。把协议状态落盘，这些指标就能直接从协议日志里算出来。指标框架见 <a href="14-evaluation-metrics.html">14</a>。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li>【文档】Claude Code sub-agents：https://code.claude.com/docs/en/sub-agents ；【文档】Cursor：https://cursor.com/docs/subagents ；【文档】Manus：https://manus.im/docs/features/wide-research</li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/subagent.ts#L19-L62</code></li>
+<li><code>kimi-code@18c6d64:…/tower/workerProfile.ts#L46-L52</code></li>
+<li><code>kimi-code@18c6d64:…/tower/injection/tower-mode-full-reminder.md#L17-L19</code></li>
+<li><code>kimi-code@18c6d64:packages/agent-core-v2/src/features/tower/tower.ts#L25-L56</code>；【文档】<code>apps/kimi-code/CHANGELOG.md#L551-L553</code></li>
+<li><code>kimi-code@18c6d64:…/tower/workerProfile.ts#L14-L44</code>；<code>tools/spawn/spawnTool.ts#L103-L109</code></li>
+<li><code>kimi-code@18c6d64:…/tower/protocol/types.ts#L25-L62</code>；<code>kimi-code@18c6d64:…/tower/injection/tower-mode-full-reminder.md#L15-L17</code></li>
+<li><code>kimi-code@18c6d64:tools/spawn/spawnTool.ts#L194-L198</code>；<code>…/tower/bashGuard.ts#L54-L57</code>、<code>#L510-L523</code></li>
+<li><code>kimi-code@18c6d64:…/tower/protocol/missionGate.ts#L106-L140</code>、<code>#L177</code>、<code>#L186-L199</code>、<code>#L205</code>、<code>#L218-L223</code>；<code>kimi-code@18c6d64:…/tower/injection/tower-mode-full-reminder.md#L20-L22</code></li>
+<li><code>kimi-code@18c6d64:…/tower/towerRateLimitService.ts#L7-L10</code>、<code>#L32-L46</code>、<code>#L99-L121</code></li>
+<li><code>kimi-code@18c6d64:…/swarm/tools/agent-swarm/agent-swarm.md#L1-L11</code>；<code>…/swarm/session/agentRunBatch.ts#L41-L47</code></li>
+<li>【文档】https://code.claude.com/docs/en/sub-agents ；https://code.claude.com/docs/en/agent-teams</li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/handlers/multi_agents_spec.rs#L665-L667</code>、<code>#L801-L808</code>；<code>codex@ce0323f:codex-rs/core/src/config/mod.rs#L256-L266</code>、<code>#L1670-L1683</code>；<code>codex@ce0323f:codex-rs/worktree/src/lib.rs#L27-L37</code></li>
+<li><code>deepseek-harness@687f282:packages/subagent/README.zh.md#L12</code>、<code>#L27-L35</code>；<code>deepseek-harness@687f282:docs/subsystems/agent-team.zh.md#L11-L24</code>；<code>deepseek-harness@687f282:packages/experimental/agent-team/src/index.ts#L42-L44</code>；<code>deepseek-harness@687f282:.agents/notes/implemented/feature/2026-08-05-agent-teams.zh.md#L11</code>、<code>#L55</code>、<code>#L73</code>、<code>#L93</code></li>
+<li>【文档】<code>pi-agents@adae290:docs/design.md#L11-L21</code>、<code>#L114-L119</code>、<code>#L158-L163</code>；<code>pi-agents@adae290:docs/messaging.md#L105-L134</code></li>
+<li><code>hermes-agent@18c525b:tools/delegate_tool_config.py#L17</code>、<code>#L121-L124</code>、<code>#L151-L160</code>；<code>hermes-agent@18c525b:tools/subagent_worktree.py#L1-L6</code></li>
+<li><code>openclaw@21de16f:src/config/zod-schema.agent-defaults-base.ts#L234-L259</code>；<code>openclaw@21de16f:docs/tools/subagents.md#L14-L31</code></li>
+<li>【文档】https://manus.im/docs/features/wide-research</li>
+<li>[社区] https://x.com/omarsar0/status/2100219606405431391</li>
+<li>[社区] https://x.com/SlaxReader/status/2105090292156432541</li>
+</ol><hr><div class="pnav">← <a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a> · <a href="index.html">总览</a> · <a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a> →</div></main></body></html>

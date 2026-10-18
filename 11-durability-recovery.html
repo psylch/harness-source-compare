@@ -1,0 +1,117 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>11 · 持久化与恢复：保证要落在失败窗口上</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html" class="cur">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>11 · 持久化与恢复：保证要落在失败窗口上</h1>
+<div class="pnav">← <a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a> · <a href="index.html">总览</a> · <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> →</div>
+
+<p>（pi-durable 的逐层拆解见 <a href="13-pi-durable.html">13 · pi-durable</a>。）</p>
+<h2>共识</h2>
+<ul>
+<li><strong>各家都保存有序状态：</strong> Codex rollout、dsh 日志、OpenCode bus、pi-durable Storage。</li>
+<li>
+<p><strong>但防的失败窗口不同：</strong></p>
+<ul>
+<li>Codex：文件 flush；</li>
+<li>dsh：调用前 checkpoint；</li>
+<li>OpenCode：inbox 事务；</li>
+<li>pi-durable：任务 checkpoint。</li>
+</ul>
+<p>所以不能按 JSONL 还是 SQLite 这种扩展名给可靠性排序〔1〕〔2〕〔3〕〔4〕。</p>
+</li>
+<li>
+<p><strong>“先存后显示”不是某一家独有的：</strong></p>
+<ul>
+<li>Hermes：tool result 的 callback 在 flush 之后才调用；</li>
+<li>OpenCode：tool call 在执行前持久化，stream event 按 <strong>100ms</strong> 批量写；</li>
+<li>dsh：关键动作前的 checkpoint 是 fail-closed 的〔5〕〔6〕〔2〕。</li>
+</ul>
+</li>
+</ul>
+<h2>关键差异</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>存储、路径与分支</th>
+<th>崩溃恢复、幂等与写者边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td><code>CODEX_HOME/sessions/YYYY/MM/DD/rollout-…jsonl</code>；写入有 flush，但这条路径<strong>不 fsync</strong>；fork 复制指定边界之前的 history〔1〕〔7〕</td>
+<td>daemon handoff 先 persist_thread 再记 interrupted snapshot，重启后正常 cold resume；有条件：regular、未 cancel、单一 local environment，remote 等情况排除。恢复的不是任意工具的程序计数器〔8〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>日志放在 root/projectKey/encoded session ID 下；JSONL 默认 zstd 压缩；base 装配实际安装了 checkpoint-policy；普通 storage batch 默认 <strong>200ms</strong>〔9〕</td>
+<td>在调用 LLM、顶层 tool、pre-step 之前 flush，<strong>失败就阻止继续</strong>；恢复时补上未完成的 tool/step/turn closers；有 torn-tail repair 和 fsync 路径；<strong>跨进程写者锁</strong>用 POSIX flock / Windows semaphore，进程退出由内核释放〔2〕〔10〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>SQLite 中 aggregate event 和 projection 在同一事务里写；fork 只取已 settled 的部分〔3〕〔11〕</td>
+<td>inbox ID 在同 session/type 下先写者胜出；消费 inbox 和插入消息在同一事务。restart 默认 <strong>10 次</strong>，明确是 at-least-once，不是 cluster fence；未 settled 的 tool 标为失败，后台 shell 重启后标为取消〔12〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>profile 下的 <code>state.db</code>，SQLite WAL、<code>BEGIN IMMEDIATE</code>；用 persisted-marker 避免重复写 message〔13〕</td>
+<td>执行 tool call 前先 flush，flush 失败就不执行；session facade 的跨进程 lease 每 <strong>60s</strong> 刷新一次，失去 lease 就中断〔14〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>legacy <code>sessions.json</code> 映射到 <code>openclaw-agent.sqlite</code>；native session manager 维护 snapshot、writer fence 和 branch epoch；Codex harness 另外绑定远端 thread ID〔15〕</td>
+<td>fence/epoch 会拒绝 stale snapshot；基础 session 只有 user message_end 走 publishAfterPersistence，其他事件可能先 emit 再 persist〔16〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】<code>~/.claude/projects/&lt;sanitized cwd&gt;/&lt;sessionId&gt;.jsonl</code>，子 agent 另存 <code>subagents/agent-ID.jsonl</code>；用 parentUuid / isSidechain 表示链；写入队列 flush 间隔 <strong>100ms</strong>〔17〕</td>
+<td>【bundle】某个 subagent 分支 await store 之后才 yield，但 catch 会吞掉存储异常〔18〕。【文档】每个起始 prompt 做一次 checkpoint，保留最近 <strong>100</strong> 个，默认在最后一次保存约 <strong>30 天</strong>后清理；<strong>Bash 修改的文件不跟踪</strong>，turn 中途不新建 checkpoint〔19〕</td>
+</tr>
+<tr>
+<td>pi coding-agent</td>
+<td>JSONL append-only 树，用 id/parentId 和 leaf 表示分支；默认路径 <code>~/.pi/agent/sessions/&lt;encoded-cwd&gt;/…jsonl</code>〔20〕</td>
+<td>恢复的是会话树，和 pi-durable 是不同的包、不同的存储合同〔20〕〔4〕</td>
+</tr>
+<tr>
+<td>pi-durable</td>
+<td>Storage 承诺 atomic commit 并返回 Seq；有 SQLite / JSONL / Memory / Cloudflare 几种 adapter〔4〕〔21〕</td>
+<td>恢复单位包括 task checkpoint、generation phase、tool intent、codemode journal；requestId 只用于入队去重；<strong>不提供跨进程写者锁</strong>〔22〕</td>
+</tr>
+</tbody>
+</table>
+<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<ul>
+<li><strong>企业团队：</strong> 创建工单成功了，但结果写盘前断电。requestId 去重只能保证用户输入不重复入队；pi-durable 默认按 unsafe 恢复，会报告 interrupted。要靠工单服务自己的业务幂等 key，不能宣传端到端 exactly-once〔22〕。</li>
+<li><strong>非工程师：</strong> 点了发送，网页重连后又发了一次。pi 的 requestId 和 OpenCode 的 inbox ID 都能返回原来那次提交；但如果是不同的 ID，就会算成两条输入〔22〕〔12〕。</li>
+<li><strong>扩展作者：</strong> 两个 worker 同时接管同一个会话。dsh 的 OS 锁可以拒绝第二个写者；pi-durable 的宿主如果创建了两个 Session 实例，实例内的队列不能互斥〔10〕〔22〕。</li>
+<li><strong>成本敏感用户：</strong> Codex cold resume 省的是重新手动组织任务，pi journal 省的是重复执行已完成的调用。两者优化的是不同的东西〔8〕〔23〕。</li>
+</ul>
+<h2>面试可讲的点</h2>
+<ol>
+<li>先问“外部操作成功、结果还没 commit 时崩溃怎么办”，比问“有没有 resume”更有区分度。</li>
+<li>恢复率指标要按失败窗口分别统计：模型请求中途、工具执行中途、结果写盘前。</li>
+<li>单写者是部署层的问题：dsh 在内核层用锁解决，pi-durable 交给宿主。做 HA 部署之前要先设计 owner/fencing。</li>
+</ol>
+<h2>引用</h2>
+<ol>
+<li><code>codex@ce0323f:codex-rs/rollout/src/recorder.rs#L1787-L1787</code>；<code>codex@ce0323f:codex-rs/rollout/src/recorder.rs#L1915-L1915</code></li>
+<li><code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L29-L37</code>；<code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L52-L82</code></li>
+<li><code>opencode@8c173a8:packages/core/src/bus.ts#L395-L429</code></li>
+<li><code>pi@c268154:packages/durable/src/types.ts#L1047-L1064</code></li>
+<li><code>hermes-agent@18c525b:agent/tool_executor.py#L1828-L1847</code></li>
+<li><code>opencode@8c173a8:packages/core/src/session/runner/step.ts#L103-L134</code>；<code>opencode@8c173a8:packages/core/src/session/runner/publish-llm-event.ts#L105-L106</code>；<code>opencode@8c173a8:packages/core/src/session/runner/publish-llm-event.ts#L177-L199</code></li>
+<li><code>codex@ce0323f:codex-rs/rollout/src/recorder.rs#L1740-L1762</code>；<code>codex@ce0323f:codex-rs/core/src/thread_manager.rs#L198-L230</code></li>
+<li><code>codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54</code>；<code>codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49</code>；<code>codex@ce0323f:codex-rs/core/src/session/daemon_recovery.rs#L23-L56</code></li>
+<li><code>deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L138-L141</code>；<code>deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L419-L421</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/format.ts#L250-L268</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/storage.ts#L36-L36</code>；<code>deepseek-harness@687f282:packages/core/session/src/fork.ts#L11-L29</code></li>
+<li><code>deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/index.ts#L1407-L1445</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L1-L27</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115</code></li>
+<li><code>opencode@8c173a8:packages/core/src/bus.ts#L314-L327</code>；<code>opencode@8c173a8:packages/core/src/session/projector.ts#L192-L209</code></li>
+<li><code>opencode@8c173a8:packages/core/src/session/inbox.ts#L113-L180</code>；<code>opencode@8c173a8:packages/core/src/session/inbox.ts#L320-L335</code>；<code>opencode@8c173a8:packages/core/src/session/projector.ts#L618-L647</code>；<code>opencode@8c173a8:packages/core/src/session/execution/restart.ts#L23-L61</code>；<code>opencode@8c173a8:packages/core/src/session/execution/restart.ts#L101-L188</code></li>
+<li><code>hermes-agent@18c525b:hermes_state.py#L176-L201</code>；<code>hermes-agent@18c525b:hermes_state.py#L800-L813</code>；<code>hermes-agent@18c525b:agent/session_persistence.py#L1-L44</code></li>
+<li><code>hermes-agent@18c525b:agent/turn_tool_round.py#L130-L150</code>；<code>hermes-agent@18c525b:agent/tool_executor.py#L199-L222</code>；<code>hermes-agent@18c525b:agent/turn_facade_lease.py#L45-L52</code></li>
+<li><code>openclaw@21de16f:src/config/sessions/session-sqlite-target-paths.ts#L22-L45</code>；<code>openclaw@21de16f:src/agents/sessions/session-manager-native-persistence.ts#L49-L87</code>；<code>openclaw@21de16f:extensions/codex/src/conversation-binding.ts#L392-L417</code></li>
+<li><code>openclaw@21de16f:src/agents/sessions/agent-session-base.ts#L348-L378</code>；<code>openclaw@21de16f:src/agents/sessions/agent-session-base.ts#L398-L413</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L435874-L435874</code>；<code>claude-code@2.1.197:bundle-split.js#L559654-L559679</code>；<code>claude-code@2.1.197:bundle-split.js#L740579-L740620</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L636597-L636610</code></li>
+<li>【文档】<code>claude-code-docs:checkpointing.md#L13-L22</code>；<code>claude-code-docs:checkpointing.md#L70-L97</code></li>
+<li><code>pi@c268154:packages/coding-agent/src/core/session-manager.ts#L977-L1015</code>；<code>pi@c268154:packages/coding-agent/src/core/session-manager.ts#L1628-L1683</code></li>
+<li><code>pi@c268154:packages/durable/src/storage/sqlite/schema.ts#L9-L19</code></li>
+<li><code>pi@c268154:packages/durable/src/harness/scheduler.ts#L291-L310</code>；<code>pi@c268154:packages/durable/src/harness/submissions.ts#L169-L188</code>；<code>pi@c268154:packages/durable/src/session/session.ts#L854-L861</code>；<code>pi@c268154:packages/durable/README.md#L688-L688</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code></li>
+<li><code>pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000</code></li>
+</ol><hr><div class="pnav">← <a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a> · <a href="index.html">总览</a> · <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> →</div></main></body></html>

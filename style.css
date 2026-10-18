@@ -1,0 +1,15 @@
+
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;color:#1f2328;background:#fff;line-height:1.7}
+nav.side{position:fixed;top:0;left:0;bottom:0;width:270px;overflow-y:auto;background:#f6f8fa;border-right:1px solid #d0d7de;padding:18px 14px;font-size:14px}
+nav.side h2{font-size:15px;margin:0 0 10px}nav.side a{display:block;padding:4px 8px;border-radius:6px;color:#1f2328;text-decoration:none}
+nav.side a:hover{background:#eaeef2}nav.side a.cur{background:#0969da;color:#fff}
+main{margin-left:270px;padding:28px 40px;max-width:1280px}
+h1{font-size:26px;border-bottom:1px solid #d0d7de;padding-bottom:8px}h2{font-size:20px;margin-top:32px;border-bottom:1px solid #eaeef2;padding-bottom:4px}h3{font-size:17px}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px;display:block;overflow-x:auto}
+th,td{border:1px solid #d0d7de;padding:6px 9px;vertical-align:top;text-align:left}th{background:#f6f8fa}tr:nth-child(even) td{background:#fbfcfd}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#f2f4f6;padding:1px 4px;border-radius:4px;word-break:break-all}
+blockquote{margin:12px 0;padding:6px 14px;border-left:4px solid #0969da;background:#f3f8ff;color:#333}
+a{color:#0969da}.pnav{font-size:13.5px;color:#57606a;margin:-6px 0 14px}
+ol li,ul li{margin:3px 0}
+@media (max-width:860px){nav.side{position:static;width:auto;height:auto;border-right:none;border-bottom:1px solid #d0d7de}main{margin-left:0;padding:18px}}
+@media print{nav.side{display:none}main{margin-left:0}}

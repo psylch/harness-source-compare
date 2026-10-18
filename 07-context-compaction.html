@@ -1,13 +1,78 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html" class="cur">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</h1>
-<div class="pnav">← <a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a> · <a href="index.html">总览</a> · <a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html" class="cur">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</h1>
+<div class="pnav">← <a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a> · <a href="index.html">总览</a> · <a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> →</div>
 
-<p>（prompt 拼装顺序、指令发现规则和缓存前缀见 <a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序</a>。）</p>
-<h2>共识</h2>
+<h2>场景：分析师在 200K 窗口模型上连续研究 3 小时，还要保留一小时前找到的原始证据。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>默认自动压缩上限为 180000 token → 按 provider 走本地或远程压缩 → 不能把两条路线视为同一种摘要。〔4〕〔5〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>按 20000 buffer 算出 180000 阈值 → 保留近期目标 15000 token → 较早证据进入摘要。〔8〕</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>CLI 超过 183616 触发；durable 可在 150848 提前后台摘要 → 阻塞线仍为 183616；近期目标 20000。〔6〕〔7〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>取 80% 窗口与扣除输出预留、65536 后的较小值 → 保留近期与工具配对；输出预算未知不能给单一数值。〔9〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>200K 属小窗口分支，比例至少 0.75 → 再考虑输出预算和下限 → 保护头 3、尾 20 条。〔10〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>按 reserve 公式留空间 → 到线压缩；deterministic 策略可直接删除旧消息并标记，不生成摘要。〔11〕〔12〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】输出预算至少 20000 时，触发点 167000 → 连续压缩另有保护；保留策略未在本页确认。〔13〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python / JS）</td>
+<td>Python 有模型窗口 profile 时以 85% 触发、保留 10%；缺少 profile 则 170000 / 6 条。JS 当时固定 170000 / 6 条，不能混用两者公式。<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L144-L162</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L187-L192</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 达到阈值会影响哪些原文仍在下一次请求里。摘要能延续任务，却可能损失细节；重要证据应能从文件重新读取。</p>
+<h3>嵌入产品的库：年初同语言对照</h3>
+<p>〔基于代码的推演〕长会话接近模型窗口。</p>
+<table>
+<thead>
+<tr>
+<th>DeepAgents JS（1 月末）</th>
+<th>pi-agent-core（2 月初）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JS 年初固定 170000 token 触发，保留 6 条；Python 的 profile 分支不能套给 JS。<code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L187-L192</code></td>
+<td>提供 transformContext 接口，摘要算法与阈值由宿主提供。<code>pi@aa83170:packages/agent/src/agent-loop.ts#L211-L218</code></td>
+</tr>
+</tbody>
+</table>
+<p>完整取舍见<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<p>（prompt 拼装顺序、指令发现规则和缓存前缀见 <a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序</a>。）</p>
+<h3>共识</h3>
 <ul>
 <li><strong>计量方式基本相同：</strong> 不是“有没有 tokenizer”的二选一，而是<strong>最近一次 provider usage 加上新增内容的本地估算</strong>。精确的只有已经返回的那次请求的 usage〔1〕〔2〕〔3〕。</li>
 <li><strong>空间不足时摘要较早部分、保留近期原文。</strong> 差异在于什么时候触发、保留多少、保护哪些消息。</li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <table>
 <thead>
 <tr>
@@ -75,19 +140,19 @@
 - OpenClaw：默认 <strong>1200px / 5MiB</strong>；
 - Claude【bundle】：JPEG quality 依次 <strong>80/60/40/20</strong>；
 - Hermes：JPEG 依次 <strong>85/70/50</strong>，最多缩 5 轮〔16〕。</p>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>长任务重度用户：</strong> 两小时的重构，第 90 分钟触发压缩。pi 以近期约 20000 tokens 为保留目标；Codex 走本地摘要还是 remote 取决于 provider 能力；pi-durable 可能提前 32768 tokens 就开始后台摘要。用户真正关心的是“刚发现的失败证据还能不能原样读到”〔17〕〔5〕〔7〕。</li>
 <li><strong>非工程师：</strong> 上传一张超长设计图，自动 resize 可能让细小的文字看不清。需要裁剪或局部重读来确认，不能假设模型看到了原始像素〔16〕。</li>
 <li><strong>成本敏感用户：</strong> Hermes 在小窗口模型上至少到 0.75 才压缩，大窗口模型上 0.50 就压缩，同一会话换模型后压缩频率会变〔10〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
-<li>可预期性比聪明更重要：用户要知道什么时候压缩、压掉了什么、能不能撤回。社区里 Claude Code 空闲压缩静默丢上下文的 issue 就是反例，见 <a href="15-community-pain-points.html">15 · 社区痛点</a>。</li>
+<li>可预期性比聪明更重要：用户要知道什么时候压缩、压掉了什么、能不能撤回。社区里 Claude Code 空闲压缩静默丢上下文的 issue 就是反例，见 <a href="18-community-pain-points.html">18 · 社区痛点</a>。</li>
 <li>可以 A/B 的参数：触发阈值、近期保留预算、是否保护 tool 配对、摘要是否排除指令文件。主指标选“压缩后任务完成率”，护栏选“压缩后重复读取次数”。</li>
 <li>不要用“接近上限就总结”一句话概括，各家公式差异在 200K 窗口下就有 1.6 万以上 token 的触发点差距。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L193-L224</code>；<code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L295-L335</code></li>
 <li><code>codex@ce0323f:codex-rs/core/src/context_manager/history.rs#L925-L954</code></li>
@@ -106,4 +171,4 @@
 <li><code>deepseek-harness@687f282:packages/llm/token-meter/src/estimate.ts#L12-L19</code>；<code>deepseek-harness@687f282:packages/llm/token-meter/src/estimate.ts#L42-L62</code>；<code>opencode@8c173a8:packages/core/src/util/token.ts#L1-L5</code>；<code>hermes-agent@18c525b:agent/model_metadata.py#L2349-L2366</code></li>
 <li><code>pi@c268154:packages/coding-agent/src/utils/image-resize-core.ts#L31-L37</code>；<code>opencode@8c173a8:packages/core/src/session/model-request.ts#L189-L215</code>；<code>openclaw@21de16f:src/agents/image-sanitization.ts#L12-L21</code>；<code>openclaw@21de16f:src/agents/image-compression-policy.ts#L37-L50</code>；【bundle】<code>claude-code@2.1.197:bundle-split.js#L529571-L529625</code>；<code>hermes-agent@18c525b:tools/vision_tools.py#L458-L503</code></li>
 <li><code>pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L431-L472</code></li>
-</ol><hr><div class="pnav">← <a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a> · <a href="index.html">总览</a> · <a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a> · <a href="index.html">总览</a> · <a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> →</div></main></body></html>

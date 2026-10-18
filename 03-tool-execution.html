@@ -1,7 +1,72 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>02 · 工具执行：调度、并发、编辑与错误回填</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html" class="cur">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>02 · 工具执行：调度、并发、编辑与错误回填</h1>
-<div class="pnav">← <a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>03 · 工具执行：调度、并发、编辑与错误回填</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html" class="cur">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>03 · 工具执行：调度、并发、编辑与错误回填</h1>
+<div class="pnav">← <a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a> →</div>
 
-<h2>共识</h2>
+<h2>场景：维护大型仓库的开发者让 agent 同时读 20 个文件，并修改其中一个文件。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>安全调用共享读锁 → 其他调用取独占写锁 → 有冲突时等待；64 是进程上限，不是 64 个工具都并行。〔4〕〔8〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>完整调用先持久化 → 启动执行分支 → 最后等待汇合；此处未确认路径冲突锁。〔14〕</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>普通 pi 默认并行 → 任一工具标 sequential 就整批串行；edit/write 同路径排队只保护本进程。durable 的提交规则另见专页。〔10〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>先检查工具是否显式声明并发安全 → 安全的进入默认 10 个槽位的池 → 其他独占执行。〔12〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>先按路径读写冲突分组 → 安全区段最多 8 个 worker → 冲突写入形成等待屏障。〔6〕〔16〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>默认并行执行 → 按调用原序提交结果；结果有序不等于共享文件无冲突。〔7〕〔18〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】连续安全调用成组 → 默认最多 10 个并行 → 非安全调用隔开组。〔3〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>工具交给 LangChain create_agent 执行；本层源码未给出可核实的全局并发数和同路径锁，不能承诺 20 个读都并行。<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L239-L251</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 等待时间取决于并发规则；是否误读旧内容或互相覆盖取决于冲突控制。并发数不能单独代表可靠性。</p>
+<h3>嵌入产品的库：年初同语言对照</h3>
+<p>〔基于代码的推演〕一轮同时产生多个工具调用。</p>
+<table>
+<thead>
+<tr>
+<th>DeepAgents JS（1 月末）</th>
+<th>pi-agent-core（2 月初）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>交给 LangChain createAgent；该封装未给出统一并发上限或路径锁。<code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L227-L237</code></td>
+<td>年初逐个 await 执行，不能把 10 月默认并行套到年初。<code>pi@aa83170:packages/agent/src/agent-loop.ts#L294-L332</code></td>
+</tr>
+</tbody>
+</table>
+<p>完整取舍见<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<h3>共识</h3>
 <ul>
 <li><strong>五段流水线：</strong> 工具调用普遍经过声明→校验→授权/拦截→执行→模型可见结果。模型输出不是可信的宿主函数调用，所以参数错误或被拒绝时要变成模型能理解的反馈，不能静默丢掉〔1〕〔2〕〔3〕。</li>
 <li>
@@ -15,7 +80,7 @@
 <p>并发耗时、结果排序、文件冲突控制是三个不同的维度〔4〕〔5〕〔6〕〔7〕。</p>
 </li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <table>
 <thead>
 <tr>
@@ -66,19 +131,19 @@
 - pi：TypeBox <code>TSchema</code>，可声明 <code>outputSchema</code>；
 - Hermes：JSON Schema dict，替换内置工具需要显式 override；
 - OpenClaw：exec 参数用 <code>Type.Object</code> 声明〔21〕。</p>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>长任务用户：</strong> 模型同时发出“读 A、读 B、跑测试”。Codex 按锁的类型决定能否并发；pi 只要测试工具声明了 sequential 就整批串行；Hermes 看路径是否冲突。wall time 和文件竞争风险都会不同〔4〕〔10〕〔6〕。</li>
 <li><strong>扩展作者：</strong> 自定义工具没声明并发安全时，dsh 默认把它当 exclusive，pi 默认并行。同一个工具从一个 harness 迁到另一个，并发语义会变〔12〕〔10〕。</li>
 <li><strong>IDE 用户：</strong> “fuzzy edit”不是一种东西。Hermes 9 级链、OpenClaw 的 NFKC 加 source map、dsh 的 literal 唯一匹配，在格式化差异下成功率和误改风险都不同〔17〕〔19〕〔13〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li>并行要拆成三个问题：谁有资格并行（opt-in 还是 opt-out）？冲突域按什么划（锁、路径、整批）？结果按什么顺序提交？</li>
 <li>“编辑失败率”是可以直接度量的 harness 指标，可以按匹配级别埋点，看最终是哪一级 fallback 成功的。</li>
 <li>错误要“回填给模型”还是“终止 turn”，决定了 agent 能否自我纠正。Codex 只有 Fatal 才终止〔9〕。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>codex@ce0323f:codex-rs/tools/src/tool_spec.rs#L18-L58</code></li>
 <li><code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L172</code></li>
@@ -101,4 +166,4 @@
 <li><code>openclaw@21de16f:src/agents/sessions/tools/edit-diff.ts#L26-L43</code>；<code>openclaw@21de16f:src/agents/sessions/tools/edit-diff.ts#L304-L352</code></li>
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L624866-L624866</code>；<code>claude-code@2.1.197:bundle-split.js#L667748-L667825</code>；<code>claude-code@2.1.197:bundle-split.js#L663926-L663944</code></li>
 <li><code>pi@c268154:packages/agent/src/types.ts#L466-L485</code>；<code>hermes-agent@18c525b:tools/registry.py#L709-L728</code>；<code>openclaw@21de16f:src/agents/bash-tools.schemas.ts#L26-L43</code></li>
-</ol><hr><div class="pnav">← <a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a> · <a href="index.html">总览</a> · <a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a> →</div></main></body></html>

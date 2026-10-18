@@ -1,7 +1,49 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>13 · pi-durable：从一次用户提交到 codemode 恢复</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html" class="cur">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>13 · pi-durable：从一次用户提交到 codemode 恢复</h1>
-<div class="pnav">← <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>14 · pi-durable：从一次用户提交到 codemode 恢复</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html" class="cur">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>14 · pi-durable：从一次用户提交到 codemode 恢复</h1>
+<div class="pnav">← <a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a> →</div>
 
-<h2>共识</h2>
+<h2>场景：做客户运营的团队把长任务部署到云端：网页断线后重发，两个 worker 又同时接手同一会话。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi-durable</td>
+<td>同 conversation/requestId/type 返回旧 submission → 不更新旧 payload；新 ID 仍会入队。Session 内提交串行，但两个进程仍需宿主保证单写者。〔7〕〔8〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>OS flock / Windows semaphore 拒绝第二个日志写者 → 解决写者竞争；不能据此推导网页请求去重。〔16〕</td>
+</tr>
+<tr>
+<td>Codex</td>
+<td>按条件交接 interrupted turn → 冷启动恢复；本页证据未确认同 requestId 的通用入队去重。〔17〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【文档】checkpoint 支持对话与文件回退 → 不等于网页去重或云端写者互斥。〔18〕</td>
+</tr>
+<tr>
+<td>OpenCode / Hermes / OpenClaw</td>
+<td>OpenCode 按 inbox ID 去重；Hermes 续租约；OpenClaw 用写者代际拒绝旧快照。它们防的是不同失败窗口，见<a href="12-durability-recovery.html">持久化与恢复</a>。</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>checkpointer/store 由调用方传入 → 能持久到哪里取决于部署；该接口不证明云上单写者锁或业务请求去重。<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L121-L131</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L239-L251</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 输入只入队一次、工具只执行一次、只有一个写者，是三个独立要求。下面把浏览器重试和多 worker 接管分开验收。</p>
+<h3>场景：工单建好了，结果还没落盘就断电</h3>
+<p>运营人员重新打开任务时，不知道工单是否成功。〔基于代码的推演〕pi-durable 的未完成工具默认 <code>unsafe</code>（不自动重试），恢复报告中断；若作者误标 <code>safe</code>（声明可重试），可能重复建单。dsh 恢复中断记录也不阻止模型再次建单。应向工单服务传业务幂等键，让重复请求复用同一结果；输入 requestId 只解决入队重复。<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code>；<code>pi@c268154:packages/durable/src/harness/submissions.ts#L169-L188</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900</code>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<h3>共识</h3>
 <ul>
 <li><strong>核心做法：</strong> pi-durable 把对话、任务和程序内可记录的调用放进<strong>同一套提交与恢复规则</strong>，四个环节连成一条可检查的恢复链：<ul>
 <li>Storage 原子 commit；</li>
@@ -10,10 +52,10 @@
 <li>codemode 的结果先写 journal 再投递〔1〕〔2〕〔3〕〔4〕。</li>
 </ul>
 </li>
-<li><strong>和其他家的关系：</strong> “先存后显示”其他家也有（见 <a href="11-durability-recovery.html">11</a>）。pi-durable 更突出的地方有两点：把这些边界统一成可恢复的 task/document 模型；把 codemode 程序的调用序列纳入回放。</li>
+<li><strong>和其他家的关系：</strong> “先存后显示”其他家也有（见 <a href="12-durability-recovery.html">12</a>）。pi-durable 更突出的地方有两点：把这些边界统一成可恢复的 task/document 模型；把 codemode 程序的调用序列纳入回放。</li>
 <li><strong>它和 pi coding-agent 的会话树是两个包，存储合同也不同。</strong> 它也不是 CLI 上给所有会话自动打开的一个开关〔1〕〔5〕。</li>
 </ul>
-<h2>关键差异：逐层边界</h2>
+<h3>关键差异：逐层边界</h3>
 <table>
 <thead>
 <tr>
@@ -102,13 +144,13 @@
 </tr>
 </tbody>
 </table>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>长任务重度用户：</strong> 脚本并行读 200 份报表，读到第 160 份时进程崩溃。如果前面的 nested results 已经提交到 journal，重跑时会直接消费旧结果再继续；只做聊天 resume 的实现恢复不了脚本里的局部变量〔4〕〔13〕。</li>
 <li><strong>企业团队：</strong> 工具作者把“创建工单”错误地标成 safe，恢复时可能会重复建单〔3〕。</li>
 <li><strong>成本敏感用户：</strong> 代价同样具体：checkpoint/journal 写入更多，流式显示要等 commit，回放要求代码、指纹和调用顺序兼容，unsafe 的未完成工具可能要人工核对〔11〕〔12〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li>它最适合<strong>进程寿命短于任务</strong>、一个模型工具内部含很多调用的场景；pi-durable 也提供 Cloudflare adapter〔1〕〔5〕。</li>
 <li>进程崩溃恢复和突然断电要分开测：SQLite NORMAL 和 JSONL <code>fsync=false</code> 提供的是不同的承诺〔15〕。</li>
@@ -116,7 +158,7 @@
    - “同 requestId 不会重复执行”应该说成“同 conversation/type 的提交只入队一次”；
    - “有单写者锁”不成立〔8〕〔7〕。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>pi@c268154:packages/durable/src/types.ts#L1047-L1154</code></li>
 <li><code>pi@c268154:packages/durable/src/harness/scheduler.ts#L291-L310</code></li>
@@ -136,4 +178,4 @@
 <li><code>deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L29-L82</code>；<code>deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900</code>；<code>deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115</code></li>
 <li><code>codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54</code>；<code>codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49</code>；<code>codex@ce0323f:codex-rs/core/src/session/daemon_recovery.rs#L23-L56</code></li>
 <li>【文档】<code>claude-code-docs:checkpointing.md#L13-L22</code>；<code>claude-code-docs:checkpointing.md#L55-L56</code>；<code>claude-code-docs:checkpointing.md#L70-L97</code></li>
-</ol><hr><div class="pnav">← <a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a> · <a href="index.html">总览</a> · <a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a> →</div></main></body></html>

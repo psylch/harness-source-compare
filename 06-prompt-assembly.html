@@ -1,14 +1,79 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>05 · Prompt / 上下文拼装顺序与缓存前缀</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html" class="cur">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>05 · Prompt / 上下文拼装顺序与缓存前缀</h1>
-<div class="pnav">← <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> · <a href="index.html">总览</a> · <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>06 · Prompt / 上下文拼装顺序与缓存前缀</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html" class="cur">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>06 · Prompt / 上下文拼装顺序与缓存前缀</h1>
+<div class="pnav">← <a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a> · <a href="index.html">总览</a> · <a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> →</div>
 
-<p>（压缩和计量见 <a href="06-context-compaction.html">06</a>，记忆的存储与学习见 <a href="08-memory-skills.html">08</a>，MCP 工具如何进入上下文见 <a href="07-mcp-tool-integration.html">07</a>。）</p>
-<h2>共识</h2>
+<h2>场景：团队负责人在长会话中更新 AGENTS.md，要求从现在起遵守新的发布规则。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>比较指令快照 → 变化时发送替换或删除片段 → 新规则进入上下文。〔8〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>首次基线冻结 → 后续差异作为持久增量追加 → 避免整段基线每轮重发。〔13〕</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>coding-agent 对变化 section 发 patch；durable 按宿主传入的有序段比较 → 只记变化；不是自动读取任意文件。〔16〕〔18〕〔19〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>首次请求注入指令基线 → 读写时发现嵌套指令；动态目录与权限信息放 user 快照。〔21〕〔22〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>system 整会话冻结 → 压缩后重建并重读 memory；不能把写文件成功当立即刷新 system。〔26〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>区分稳定前缀和动态后缀 → provider 按边界设置缓存标记；实际是否命中仍取决于服务端。〔29〕〔31〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】context 做 memoize；【文档】子目录指令按需加载；此证据不足以承诺热更新延迟。〔34〕〔35〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>传入 memory 文件源 → 启动加载到 system；自定义 system 与基础提示拼接，另装缓存 middleware；实时重载和命中率不能由此推定。<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L113-L118</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L189-L237</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 规则已写入磁盘不等于下一轮已采用。稳定前缀有助缓存，但实际计费改善必须看服务端 usage，不能从拼装顺序直接推出。</p>
+<h3>嵌入产品的库：年初同语言对照</h3>
+<p>〔基于代码的推演〕产品要把个人事件筛选后交给模型。</p>
+<table>
+<thead>
+<tr>
+<th>DeepAgents JS（1 月末）</th>
+<th>pi-agent-core（2 月初）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>memory 源可接入 system，另有缓存 middleware；是否命中缓存仍看服务端。<code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L187-L207</code></td>
+<td>transformContext 先选上下文，convertToLlm 再转模型消息；不自动读取 AGENTS.md。<code>pi@aa83170:packages/agent/src/agent-loop.ts#L211-L237</code></td>
+</tr>
+</tbody>
+</table>
+<p>完整取舍见<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<p>（压缩和计量见 <a href="07-context-compaction.html">07</a>，记忆的存储与学习见 <a href="09-memory-skills.html">09</a>，MCP 工具如何进入上下文见 <a href="08-mcp-tool-integration.html">08</a>。）</p>
+<h3>共识</h3>
 <ul>
 <li><strong>组织方式相同：</strong> 都要把稳定指令、项目指令、技能目录、记忆、工具声明、环境信息（cwd、日期）、历史消息组织成一次请求。</li>
 <li><strong>共同的缓存策略：</strong> 越多会话共享的内容放越前面，随目录、日期、本轮变化的内容放后面或者移出 system。这样稳定前缀才能复用，一次局部变化不会让整个前缀失效〔1〕〔2〕〔3〕。</li>
 <li><strong>工具声明普遍独立于 system 文本</strong>（Codex 的 Responses Lite 是例外，见下表），并且多被当作单独的缓存位置处理〔4〕〔5〕。</li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <table>
 <thead>
 <tr>
@@ -50,7 +115,7 @@
 </tr>
 <tr>
 <td>OpenClaw</td>
-<td>身份 → 交互/执行 guidance → provider 稳定前缀 → 目录/workspace 说明 → bootstrap → Project Context → <strong>SYSTEM_PROMPT_CACHE_BOUNDARY</strong> → 工具目录 → skills → memory → docs → sandbox → 动态后缀 → Runtime〔29〕〔30〕</td>
+<td>身份 → 交互/执行 guidance → provider 稳定前缀 → 目录与工作区说明 → bootstrap → Project Context → <strong>SYSTEM_PROMPT_CACHE_BOUNDARY</strong> → 工具目录 → skills → memory → docs → sandbox → 动态后缀 → Runtime〔29〕〔30〕</td>
 <td>稳定前缀的 cache key 是相关输入的 JSON SHA-256〔29〕；Anthropic payload 按 boundary 把 system 拆成两块，只有稳定块带 cache_control，然后先统计 system/tools 已用的 marker，剩余预算给 messages〔31〕</td>
 </tr>
 <tr>
@@ -70,20 +135,20 @@
 - Hermes：支持 <strong>5m/1h/auto/off</strong>〔42〕；
 - OpenCode：Anthropic 支持 1h〔42〕。</p>
 <p>以上都只是提高命中机会的设计，不保证服务端一定命中。</p>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>成本敏感用户：</strong> 日期、cwd 这类会变的内容放在哪里，决定了换天或换目录时缓存前缀会不会整体失效。OpenCode 把 date/environment 放在 baseline 末尾；dsh 把路径类 context 移出 system；Hermes 冻结整个会话的 system，日期只精确到天，而且要等上下文重建时才更新〔12〕〔21〕〔26〕。</li>
-<li><strong>扩展作者：</strong> 在 prompt 中段插入动态内容，会破坏后面所有内容的缓存。OpenClaw 的 boundary 和 dsh 的位置表都给出了“该插在哪”的约定〔29〕〔20〕。社区有 pi 扩展注入的 prompt 丢失、导致整段重新计费的报告（见 <a href="15-community-pain-points.html">15</a>）。</li>
+<li><strong>扩展作者：</strong> 在 prompt 中段插入动态内容，会破坏后面所有内容的缓存。OpenClaw 的 boundary 和 dsh 的位置表都给出了“该插在哪”的约定〔29〕〔20〕。社区有 pi 扩展注入的 prompt 丢失、导致整段重新计费的报告（见 <a href="18-community-pain-points.html">18</a>）。</li>
 <li><strong>企业团队、monorepo：</strong> 指令发现规则不同：Codex 不越过项目根，pi 扫描祖先目录，dsh/OpenCode 在读写文件时懒加载子目录的指令。规则文件在磁盘上存在，不等于进入了请求〔7〕〔15〕〔22〕。</li>
 <li><strong>重度用户：</strong> Hermes 写入记忆后，当前会话的 system 仍是旧的快照；Codex 的 world-state 快照有变化才发增量。所以“已记住”和“下一次请求能看到”之间会有延迟〔26〕〔8〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li><strong>按共享程度排序：</strong> “从跨会话共享到本轮专属”是各家共同的排序原则，可以直接作为 prompt 拼装的设计原则来讲（OpenCode 源码注释写得最明确）〔2〕。</li>
 <li><strong>增量还是整段重发：</strong> Codex world-state、OpenCode durable delta、pi section patch 都只发变化的部分，可以量化成“每轮重发的 system token 数”〔8〕〔13〕〔16〕。</li>
 <li><strong>缓存指标：</strong> 缓存命中率和“每轮新增的未缓存 token”可以作为 prompt 改动的护栏指标，避免一次改动让所有会话的缓存失效。注意源码只能证明“命中机会”的设计，不能证明服务端实际命中了。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>pi@c268154:packages/coding-agent/src/core/system-prompt.ts#L136-L211</code>；<code>codex@ce0323f:codex-rs/core/src/session/mod.rs#L4473-L4560</code>；<code>hermes-agent@18c525b:agent/system_prompt.py#L736-L811</code></li>
 <li><code>opencode@8c173a8:packages/core/src/session/context.ts#L127-L159</code></li>
@@ -127,4 +192,4 @@
 <li><code>deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L303-L306</code>；<code>deepseek-harness@687f282:packages/context/agent-instructions/src/config.ts#L11-L42</code></li>
 <li><code>pi@c268154:packages/ai/src/api/anthropic-messages.ts#L66-L93</code></li>
 <li><code>hermes-agent@18c525b:agent/agent_init.py#L684-L697</code>；<code>opencode@8c173a8:packages/ai/src/protocols/anthropic-messages.ts#L515-L531</code></li>
-</ol><hr><div class="pnav">← <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> · <a href="index.html">总览</a> · <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a> · <a href="index.html">总览</a> · <a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> →</div></main></body></html>

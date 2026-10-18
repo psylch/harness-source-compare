@@ -1,7 +1,72 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>08 · 记忆与技能：存下来、选出来、再注入是三件事</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html" class="cur">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>08 · 记忆与技能：存下来、选出来、再注入是三件事</h1>
-<div class="pnav">← <a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> · <a href="index.html">总览</a> · <a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>09 · 记忆与技能：存下来、选出来、再注入是三件事</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html" class="cur">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>09 · 记忆与技能：存下来、选出来、再注入是三件事</h1>
+<div class="pnav">← <a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> · <a href="index.html">总览</a> · <a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a> →</div>
 
-<h2>共识</h2>
+<h2>场景：客户经理周一告诉 agent“周报用中文、不要提旧客户”，周五新开会话。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>满足后台记忆筛选条件 → 两阶段生成和整理 → 按 feature 设置注入；不是每条纠正必然成为记忆。〔4〕〔5〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>发现 skill → 经权限读取正文；默认从纠正自动生成记忆未确认。〔9〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>扫描技能目录 → 模型按需读正文；所核核心没有确认自动提炼这条偏好的闭环。〔6〕〔7〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>发现并监听 skill 文件 → 变化可被发现；监听不是自动从聊天学习。〔8〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>显式写 MEMORY/USER → 下次构建 system 注入；当前冻结快照不立即变，预算分别 2200/1375 字符。〔3〕〔10〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>memory_search/get 检索 → promotion/dreaming 另有处理；默认周期与统一 TTL 未确认。〔12〕〔13〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】按 MEMORY 的行数和字符预算加载 → 提示模型写记忆；不保证每次纠正都会写入。〔14〕〔15〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>默认文件存在线程状态；配置 StoreBackend 可跨线程保存，CompositeBackend 按路径分流；仍需产品决定存什么、如何删除。<code>deepagents@c177c9f:libs/deepagents/deepagents/backends/state.py#L28-L37</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/backends/store.py#L28-L58</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/backends/composite.py#L37-L45</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 验收不是模型说“记住了”，而是下一次任务是否检索、采用并正确遗忘。存储、筛选、注入要分别有证据。</p>
+<h3>嵌入产品的库：年初同语言对照</h3>
+<p>〔基于代码的推演〕周五需要周一的偏好。</p>
+<table>
+<thead>
+<tr>
+<th>DeepAgents JS（1 月末）</th>
+<th>pi-agent-core（2 月初）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>StateBackend 为线程文件；StoreBackend 接跨线程存储，须配置实际 store。<code>deepagentsjs@6b912ab:libs/deepagents/src/backends/state.ts#L26-L35</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/backends/store.ts#L27-L53</code></td>
+<td>内存消息由宿主恢复；个人记忆选择与持久化要另建。<code>pi@aa83170:packages/agent/src/agent.ts#L91-L108</code>；<code>pi@aa83170:packages/agent/src/agent.ts#L218-L239</code></td>
+</tr>
+</tbody>
+</table>
+<p>完整取舍见<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<h3>共识</h3>
 <ul>
 <li><strong>要转成模型可读内容才会生效：</strong><ul>
 <li>pi：先给技能目录，再用 read 加载正文；</li>
@@ -11,7 +76,7 @@
 </li>
 <li><strong>文件在不等于被用上：</strong> 磁盘上有这个文件，不代表每次请求都读到了，也不代表自动学习闭环已经开启。</li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <table>
 <thead>
 <tr>
@@ -58,19 +123,19 @@
 </tr>
 </tbody>
 </table>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>重度用户：</strong> 周一纠正了测试命令，周三开新任务时会不会自动带上？Codex 要满足后台阶段的筛选并成功 consolidate 才可能带上；Hermes 显式写入的记忆可以跨会话带入，但当前会话的 system 仍是冻结的。验收要看下一会话能否正确检索，不能只看模型说了一句“已记住”〔5〕〔10〕。</li>
 <li><strong>企业安全团队：</strong> 旧客户的规则不应该被永远继承。Codex 的 age / idle / unused 筛选和 Hermes 的技能归档是两种不同的治理方式，都替代不了企业自己的数据保留策略〔5〕〔11〕。</li>
 <li><strong>扩展作者、非工程师：</strong> 装了一个“报表技能”之后，安装成功、被发现、获准读取、实际遵循是四个可以分别失败的环节。UI 不应该只显示一个“已安装”的勾〔6〕〔9〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li>把记忆拆成三个可度量的环节：写入率、检索命中率、注入后遵循率。</li>
 <li>缓存和新鲜度之间有取舍：Hermes 冻结 system 保住缓存前缀，代价是新事实要通过对话或工具结果才能让模型知道〔3〕〔10〕。</li>
 <li>“编码类 harness 只靠指令文件”这个说法在 Codex 当前快照上不成立，它确实有自动 memory 生成〔5〕。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>pi@c268154:packages/coding-agent/src/core/skills.ts#L358-L385</code></li>
 <li><code>codex@ce0323f:codex-rs/ext/memories/src/extension.rs#L45-L101</code></li>
@@ -87,4 +152,4 @@
 <li><code>openclaw@21de16f:extensions/memory-core/src/dreaming.ts#L192-L243</code>；<code>openclaw@21de16f:extensions/memory-core/src/dreaming.ts#L261-L305</code></li>
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L464523-L464523</code>；<code>claude-code@2.1.197:bundle-split.js#L513529-L513529</code>；<code>claude-code@2.1.197:bundle-split.js#L513732-L513741</code></li>
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L513781-L513829</code></li>
-</ol><hr><div class="pnav">← <a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> · <a href="index.html">总览</a> · <a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a> · <a href="index.html">总览</a> · <a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a> →</div></main></body></html>

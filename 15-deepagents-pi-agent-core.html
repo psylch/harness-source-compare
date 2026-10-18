@@ -1,0 +1,213 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>15 · DeepAgents → pi-agent-core 决策分析</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html" class="cur">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>15 · DeepAgents → pi-agent-core 决策分析</h1>
+<div class="pnav">← <a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a> · <a href="index.html">总览</a> · <a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a> →</div>
+
+<h2>场景：Vida 的后台目标还在推进，用户突然说“别发给客户，先给我看”</h2>
+<p><strong>源码支持的迁移理由是：把产品的执行规则、个人上下文和交互状态掌握在自己的运行时中。代价是团队要接手持久化、审批、压缩、调度和可观测性。</strong> 这不是“pi 天生更可靠”的结论。</p>
+<p>已知背景：Charles 于 2026.01–2026.06 在 Einsia 担任 Agent PM；Vida 是主动式工作 agent，包含 Goal、Routine、macOS AX（辅助功能接口）个人上下文采集与记忆，以及 OpenChronicle。Charles 确认比较对象是嵌入产品的 <strong>DeepAgents 与 pi-agent-core</strong>。实际使用版本、故障、决策过程和收益仍需他确认。</p>
+<p>〔基于代码的推演〕年初 pi-agent-core 在当前工具结束后读取 <code>steer()</code> 队列，跳过尚未执行的同批调用，再把新消息交给模型；<code>followUp()</code> 则等本轮任务原本要结束时处理。DeepAgents JS 的 <code>interruptOn</code> 是指定工具前的人工审批，可用同一 thread 的 <code>Command({resume: ...})</code> 恢复。前者更直接表达“改方向”，后者更直接表达“先审批”；两者都不能撤销已发送的邮件。〔P1〕〔D1〕〔D2〕</p>
+<p><strong>对 Vida 的含义〔推断〕：</strong> 用户插话、Routine 触发、AX 更新应是不同类型的输入；哪些立刻改变方向、哪些只更新背景、哪些等当前目标结束，由产品决定。如果这正是当时的主要难题，pi-agent-core 的小循环与显式队列是合理理由；若首要需求是审批暂停后跨进程恢复，DeepAgents 的现成接口更有优势。</p>
+<h2>时间边界：用当时的库解释当时的选择</h2>
+<table>
+<thead>
+<tr>
+<th>对象</th>
+<th>年初代表快照</th>
+<th>后续对照快照</th>
+<th>能归属到哪一层</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepAgents JS（主要对手，同为 TypeScript）</td>
+<td><code>6b912ab57d877dc6eabfc11db45a26794781897c</code>，2026-01-30；包 <code>deepagents</code> 1.6.1</td>
+<td><code>5864b068924c46aa10dfb5f93a220432f71faeed</code>，2026-10-16</td>
+<td>LangChain <code>createAgent</code> 加 middleware（执行前后插入的逻辑），使用 LangGraph 状态与检查点接口〔D1〕〔D3〕〔H1〕</td>
+</tr>
+<tr>
+<td>DeepAgents Python（补充，不替代 JS）</td>
+<td><code>c177c9fc4d916fc01784d631deffd81f57f9841c</code>，2026-01-30；0.3.9</td>
+<td><code>0ce837bf69ff0efb10c2fa100039cc0c78a74a11</code>，2026-10-17</td>
+<td>Python 3.11+，<code>create_deep_agent</code> 包装 LangChain <code>create_agent</code>；两语言默认值不保证同步〔Y1〕〔H2〕</td>
+</tr>
+<tr>
+<td>pi-agent-core 与 pi-ai</td>
+<td><code>aa83170e0f3e3e9150c9c22fd162cf53bc6e5d44</code>，2026-02-01（提交原时区 +01:00）；0.50.8</td>
+<td><code>c268154ca1171c2f9eefe75d3d7372a68aada2d5</code>，2026-10-17</td>
+<td>年初为 <code>@mariozechner/pi-agent-core</code> / <code>@mariozechner/pi-ai</code>；10 月改为 <code>@earendil-works/...</code>，1.3.0〔P2〕〔H3〕</td>
+</tr>
+</tbody>
+</table>
+<p>这组快照相差两天，代表 1 月末至 2 月初的可用能力，不是 Vida 实际安装版本的证明。以下主表均比较年初；10 月变化另列，不倒推为迁移动机。</p>
+<h2>逐层比较：谁负责产品行为</h2>
+<p>〔源码已核实〕下表描述接口和控制流；“适合”属于下一节的条件推断。</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>DeepAgents JS 年初</th>
+<th>pi-agent-core 年初</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>循环与状态</td>
+<td><code>createDeepAgent</code> 组装 todo、文件、子 agent、摘要等 middleware，再交给 <code>createAgent</code>；业务状态进入框架状态模型〔D1〕</td>
+<td><code>Agent</code> 保存内存状态；直接运行模型→工具→结果循环，工具默认空列表，可订阅事件〔P1〕〔P3〕</td>
+</tr>
+<tr>
+<td>工具执行与并发</td>
+<td>自定义工具与内置工具交给 LangChain；此封装不能证明统一并发上限、路径冲突锁或所有 provider 的并发行为〔D1〕</td>
+<td><code>for</code> 循环逐个 <code>await tool.execute</code>；参数先校验，异常转错误结果；当时不能以“默认工具并行”作为选型理由〔P1〕</td>
+</tr>
+<tr>
+<td>插话、停止、审批</td>
+<td><code>interruptOn</code> 配置工具审批；测试以 MemorySaver、thread_id、Command resume 表达暂停/恢复。MemorySaver 是内存例子，不能证明断电后保存〔D2〕</td>
+<td><code>steer</code> 当前工具后采纳并跳过余下工具；<code>followUp</code> 任务末尾采纳；<code>abort</code> 发取消信号，工具需配合，不能保证现实副作用停止〔P1〕〔P3〕</td>
+</tr>
+<tr>
+<td>上下文与压缩</td>
+<td>默认摘要触发 170000 token，保留 6 条消息；不是自动适配所有小窗口模型的阈值〔D1〕</td>
+<td>每次模型请求前先 <code>transformContext</code> 再 <code>convertToLlm</code>；这是裁剪、检索、摘要的接入点，不自带摘要策略〔P4〕</td>
+</tr>
+<tr>
+<td>大工具结果</td>
+<td>适用工具的字符串超过默认 20000×4 字符 → 写后端文件 → 返回头尾预览和路径；写失败保留原文；read_file 等排除〔D4〕</td>
+<td>工具返回 content 和 details；循环把 content 回填模型。没有 CLI 的 2000 行/50KiB Bash 截断保证，需宿主实现〔P1〕〔P5〕</td>
+</tr>
+<tr>
+<td>子 agent / 规划</td>
+<td>默认 todo 和通用子 agent；task 用 description 建立子对话，等待完成后把最后消息及允许的状态更新交回父级〔D1〕〔D5〕</td>
+<td>核心提供自定义工具与循环；团队可以用工具启动另一个 Agent，但任务树、限流、超时、汇总都需产品实现，不能套用 CLI 示例的 8 tasks / 4 并发〔P5〕</td>
+</tr>
+<tr>
+<td>个人记忆与文件</td>
+<td>StateBackend 为线程状态文件；StoreBackend 接跨线程 store；CompositeBackend 按路径前缀路由；默认状态文件不等于个人长期记忆库〔D6〕</td>
+<td>内存 messages 与上下文转换接口；AX、个人资料、遗忘和访问控制由业务存储及上下文选择层负责〔P3〕〔P4〕</td>
+</tr>
+<tr>
+<td>持久化与恢复</td>
+<td>接受 checkpointer、store 并传给 LangChain；已有状态保存接口，但要选择持久介质。普通工具内部的 160 次 API 不因此自动逐次落盘〔D1〕</td>
+<td><code>replaceMessages</code> 能装入宿主恢复的消息；<code>continue</code> 继续已有上下文。核心内存队列与状态没有磁盘提交协议，不是崩溃恢复引擎〔P3〕</td>
+</tr>
+<tr>
+<td>扩展与审批</td>
+<td>自定义 middleware 接在内置链后；可用 HITL（人在回路中审批）控制指定工具〔D1〕〔D2〕</td>
+<td>可替换 streamFn、转换上下文、包装自定义工具 execute；年初接口没有 10 月的 beforeToolCall/afterToolCall，审批需宿主实现〔P3〕〔P5〕〔H3〕</td>
+</tr>
+<tr>
+<td>模型 / provider</td>
+<td>传入 model，交给 LangChain；默认 Anthropic 不等于只支持 Anthropic；具体适配器与功能仍需逐一验收〔D1〕〔D3〕</td>
+<td>pi-ai 统一 streamSimple 和 API 注册；已有 OpenAI、Anthropic、Google、Bedrock 等接口，Agent 可 setModel；换模型不保证历史工具消息、推理预算和效果完全兼容〔P6〕</td>
+</tr>
+<tr>
+<td>可观测性</td>
+<td>可使用框架 invoke/状态和后续 LangSmith 集成路线；年初具体 tracing 默认配置、上传内容和费用未确认，不作为必然优势〔D2〕〔H1〕</td>
+<td>message、turn、tool 的开始/更新/结束事件直接可订阅；日志落盘、trace 关联、脱敏、成本看板仍需实现〔P3〕〔P5〕</td>
+</tr>
+<tr>
+<td>运行与依赖</td>
+<td>JS 包直接运行依赖 8 项，含 LangChain、LangGraph、core、Anthropic；Python 是另一实现，不是 JS 的必装依赖〔D3〕〔Y1〕</td>
+<td>agent 包直接运行依赖 2 项：pi-ai 和 pi-tui；pi-ai 自身有 13 项直接依赖，包括多个 provider SDK。不能称为“零依赖”〔P2〕</td>
+</tr>
+</tbody>
+</table>
+<p>直接依赖数量不含开发依赖，也不等于传递依赖总量、打包体积、冷启动速度或常驻内存。DeepAgents 可在应用中 <code>invoke</code>，并非必须购买或部署 LangGraph 平台；平台托管、调度和多 worker 运维不能凭库的入口推定。〔D2〕〔D3〕</p>
+<h2>Vida 型场景：源码支持哪些理由</h2>
+<p>以下是〔基于代码的推演〕，倾向与产品收益均为〔推断〕，不是 Einsia 已发生的故障或实测结果。</p>
+<table>
+<thead>
+<tr>
+<th>用户的具体处境</th>
+<th>DeepAgents JS 会怎样</th>
+<th>pi-agent-core 会怎样</th>
+<th>条件倾向与应验收的指标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>知识工作者让后台 Goal 连续研究数小时，电脑重启</td>
+<td>配置持久 checkpointer 后可保存框架状态；具体恢复边界由后端决定〔D1〕</td>
+<td>内存 Agent 消失；产品必须持久化输入、已知结果和恢复状态〔P3〕</td>
+<td>缺少基础设施时偏 DeepAgents；若已有产品任务存储，pi 更便于统一，但须测三个崩溃窗口的恢复率</td>
+</tr>
+<tr>
+<td>运营人员的早间 Routine 触发时，昨天的任务还在跑</td>
+<td>调度器需要决定 thread、并发和业务重复；checkpointer 不是定时器〔D1〕</td>
+<td>忙时再次 prompt 报错；可选 followUp 或另建 Agent，队列落盘和去重需自建〔P3〕</td>
+<td>若要自己定义 Goal/Routine 关系，pi 接口直观；两者都需调度系统。测漏触发、重复执行、积压时间</td>
+</tr>
+<tr>
+<td>用户在发送前临时改方向</td>
+<td>指定发送工具可先审批，恢复继续；任意文本插话不是同一语义〔D2〕</td>
+<td>当前工具后处理 steer；已发邮件不回滚，正在执行需工具配合取消〔P1〕</td>
+<td>改方向偏 pi 的显式 API；强审批偏 DeepAgents。测已收到→已采纳的 P95、误发次数</td>
+</tr>
+<tr>
+<td>macOS AX 一天积累大量个人上下文</td>
+<td>文件后端、记忆源、摘要提供起点；仍需决定检索、权限和隐私边界〔D1〕〔D6〕</td>
+<td>在 transformContext 筛选相关个人事件，convertToLlm 决定哪些进入请求；策略全由产品定义〔P4〕</td>
+<td>已有 AX / OpenChronicle 数据模型时可偏 pi 的接入自由；没有现成上下文层时 DeepAgents 省建设。测证据命中率、每任务输入 token</td>
+</tr>
+<tr>
+<td>日常提醒使用小模型，复杂规划换大模型</td>
+<td>可换 model，但年初默认摘要阈值固定，需验证适配小窗口〔D1〕</td>
+<td>setModel 加 pi-ai 接口；裁剪和预算由宿主随模型调整〔P4〕〔P6〕</td>
+<td>两者都能换模型。pi 的统一接口可能降低业务分支，不能承诺更便宜；测同质量任务成本与工具成功率</td>
+</tr>
+<tr>
+<td>工具吐出巨大的桌面记录或网页正文</td>
+<td>适用输出写文件并给预览；写失败可能仍把大结果回模型〔D4〕</td>
+<td>原样回填工具 content，宿主需摘要/索引/外置全文〔P1〕〔P5〕</td>
+<td>默认成本保护偏 DeepAgents；定制证据选择偏 pi。测根因证据可见率与追加读取次数</td>
+</tr>
+<tr>
+<td>PM 要复盘“为什么提醒错人”</td>
+<td>框架状态、middleware 与模型请求共同影响执行；可以沿框架接口记录，年初 tracing 配置待确认〔D1〕</td>
+<td>事件按消息和工具暴露，产品可关联 Goal/Routine/AX 来源；事件本身不包含完整业务因果〔P5〕</td>
+<td>pi 便于贴业务 ID 的判断是推断；必须建设记录。测坏例定位耗时、缺失事件率、敏感数据泄漏率</td>
+</tr>
+<tr>
+<td>研究 Goal 需要多个助手与待办计划</td>
+<td>内置 todo 和 task，默认可用〔D1〕〔D5〕</td>
+<td>需要封装子 Agent 工具与任务管理〔P5〕</td>
+<td>此场景通常偏 DeepAgents 的开箱能力；迁移必须计入重建成本</td>
+</tr>
+</tbody>
+</table>
+<h2>10 月变化：只用于说明演进</h2>
+<p>〔源码已核实〕pi <code>c268154</code> 的 agent-core 默认并行；某工具声明 sequential 会使整批串行。steering 改为当前 assistant 的工具执行完成后采纳，不跳过当前批次；新增 beforeToolCall、afterToolCall 等接口。年初“每个工具后插话并跳过剩余工具”的体验不能无测试升级。〔H3〕</p>
+<p>〔源码已核实〕DeepAgents JS HEAD 使用带 backend、按模型 profile 计算默认值的摘要 middleware，并有自定义 middleware 合并/排除、可选异步子 agent 桥；仍将 checkpointer/store 传给 createAgent。Python HEAD 也保留此构建方式，并明确异步子 agent 支持 LangSmith 部署。不能把年初固定 170000 token 的限制写成所有后续版本都如此。〔H1〕〔H2〕</p>
+<p>〔源码已核实〕coding-agent 的会话文件、压缩实现、扩展系统在年初仓库已经存在，但属于 <code>packages/coding-agent</code>，不是 agent-core 自动拥有的功能。10 月的 pi-durable 是独立包；<code>packages/durable</code> 的目录历史从 2026-09-18 的 <code>080160162</code> 开始，年初树不存在该目录，因此其 codemode journal、请求去重、持久任务都不能解释 1–2 月的 agent-core 选型。目录首次出现不等于所有相关思想的最早发明时间。〔P7〕〔H4〕</p>
+<h2>DeepAgents 做得更好，以及迁移必须支付什么</h2>
+<p>DeepAgents 年初就把规划待办、文件读写、长输出外置、子任务和自动摘要组合起来；checkpointer/store 与工具审批已有连接点。如果产品工作流接近这些默认假设，团队可以少写相当多的基础设施。它允许自定义 middleware，所以“框架完全不可定制”也不成立。〔D1〕〔D2〕〔D4〕〔D6〕</p>
+<p>〔推断〕迁到 pi-agent-core 的收益应是减少不需要的默认行为、让产品拥有上下文和执行规则，而不是减少所有代码。必须重做或对接：历史消息格式、工具 schema 与错误转换、持久队列、恢复协议、审批状态、摘要和文件索引、子任务管理、可观测性、权限与数据保留。已有 LangGraph 状态和 checkpoint 不会直接变成 Agent.messages；双运行时迁移期间还要处理旧会话恢复与副作用去重。</p>
+<p>〔推断〕合理的决策门槛是：产品确实需要长期维护自己的 Goal/Routine/个人上下文模型，并有能力承担这些基础设施；否则 DeepAgents 的现成能力可能更划算。可先用同一组“插话、重启、重复触发、长上下文、模型切换”任务对照，保持工具与模型相同，分别看质量、延迟、成本和恢复结果。这里是建议的验收方案，不是已完成实验。</p>
+<h2>需要 Charles 确认</h2>
+<ol>
+<li>实际迁移日期、DeepAgents 是 JS 还是 Python、两边版本或 lockfile、试验与生产是否一致。</li>
+<li>当时最痛的三个坏例：插话延迟、上下文难控制、调试困难、成本，还是别的问题？哪些有记录？</li>
+<li>Vida 宿主是否 TypeScript；Goal、Routine、AX、OpenChronicle 各自由哪个服务负责，是否已有会话/任务存储。</li>
+<li>实际用过哪些 middleware、文件 backend、checkpointer、HITL、子 agent、LangSmith；哪些是迁移后必须补回的。</li>
+<li>pi-agent-core 是否被 fork，是否自建并发、审批、摘要、持久化；升级时是否注意 steering 语义变化。</li>
+<li>同任务对照的模型、成本、成功率、P95 插话延迟、坏例定位耗时，以及样本量和观察周期。</li>
+<li>迁移是否完成、灰度比例、耗时、回退条件；“预期收益”与“观察结果”分别是什么。</li>
+</ol>
+<h2>引用</h2>
+<p><strong>D1</strong> <code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L97-L112</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L131-L237</code>。</p>
+<p><strong>D2</strong> <code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/hitl.int.test.ts#L21-L39</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/hitl.int.test.ts#L70-L130</code>（仓库测试所表达的接口合同）。</p>
+<p><strong>D3</strong> <code>deepagentsjs@6b912ab:libs/deepagents/package.json#L1-L8</code>；<code>deepagentsjs@6b912ab:libs/deepagents/package.json#L40-L49</code>。</p>
+<p><strong>D4</strong> <code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/fs.ts#L59-L80</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/fs.ts#L709-L723</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/fs.ts#L787-L855</code>。</p>
+<p><strong>D5</strong> <code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/subagents.ts#L238-L257</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/subagents.ts#L375-L409</code>。</p>
+<p><strong>D6</strong> <code>deepagentsjs@6b912ab:libs/deepagents/src/backends/state.ts#L26-L51</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/backends/store.ts#L27-L53</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/backends/composite.ts#L18-L42</code>。</p>
+<p><strong>P1</strong> <code>pi@aa83170:packages/agent/src/agent-loop.ts#L104-L198</code>；<code>pi@aa83170:packages/agent/src/agent-loop.ts#L294-L377</code>。</p>
+<p><strong>P2</strong> <code>pi@aa83170:packages/agent/package.json#L1-L24</code>；<code>pi@aa83170:packages/ai/package.json#L24-L38</code>。</p>
+<p><strong>P3</strong> <code>pi@aa83170:packages/agent/src/agent.ts#L34-L130</code>；<code>pi@aa83170:packages/agent/src/agent.ts#L180-L327</code>。</p>
+<p><strong>P4</strong> <code>pi@aa83170:packages/agent/src/agent-loop.ts#L204-L237</code>。</p>
+<p><strong>P5</strong> <code>pi@aa83170:packages/agent/src/types.ts#L106-L194</code>。</p>
+<p><strong>P6</strong> <code>pi@aa83170:packages/ai/src/providers/register-builtins.ts#L1-L65</code>；<code>pi@aa83170:packages/ai/src/types.ts#L5-L41</code>；<code>pi@aa83170:packages/ai/src/stream.ts#L26-L58</code>；<code>pi@aa83170:packages/agent/src/agent.ts#L185-L192</code>。</p>
+<p><strong>P7</strong> <code>pi@aa83170:packages/coding-agent/src/core/compaction/compaction.ts#L1-L25</code>；<code>pi@aa83170:packages/coding-agent/src/core/session-manager.ts#L1-L35</code>；<code>pi@aa83170:packages/coding-agent/src/core/extensions/index.ts#L1-L18</code>。</p>
+<p><strong>Y1</strong> <code>deepagents@c177c9f:libs/deepagents/pyproject.toml#L1-L14</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L139-L162</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L189-L251</code>。</p>
+<p><strong>H1</strong> <code>deepagentsjs@5864b06:libs/deepagents/src/agent.ts#L485-L590</code>；<code>deepagentsjs@5864b06:libs/deepagents/src/middleware/summarization.ts#L177-L211</code>；<code>deepagentsjs@5864b06:libs/deepagents/package.json#L40-L44</code>；<code>deepagentsjs@5864b06:libs/deepagents/package.json#L101-L109</code>；<code>deepagentsjs@5864b06:libs/deepagents/README.md#L74-L74</code>。HEAD 有 4 项直接运行 dependencies 和另列的 peerDependencies，不能据此声称 LangChain 依赖消失。</p>
+<p><strong>H2</strong> <code>deepagents@0ce837bf6:libs/deepagents/deepagents/graph.py#L923-L957</code>；<code>deepagents@0ce837bf6:libs/deepagents/deepagents/graph.py#L995-L1015</code>；<code>deepagents@0ce837bf6:libs/deepagents/pyproject.toml#L8-L26</code>。</p>
+<p><strong>H3</strong> <code>pi@c268154:packages/agent/package.json#L1-L28</code>；<code>pi@c268154:packages/agent/src/types.ts#L282-L341</code>；<code>pi@c268154:packages/agent/src/agent-loop.ts#L508-L523</code>。</p>
+<p><strong>H4</strong> <code>pi@080160162:packages/durable/package.json#L1-L10</code>；<code>pi@c268154:packages/durable/src/harness/tool.ts#L132-L192</code>；<code>pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000</code>。</p><hr><div class="pnav">← <a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a> · <a href="index.html">总览</a> · <a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a> →</div></main></body></html>

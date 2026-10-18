@@ -1,0 +1,152 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>10 · 子 agent：独立上下文不等于独立文件系统</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html" class="cur">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>10 · 子 agent：独立上下文不等于独立文件系统</h1>
+<div class="pnav">← <a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a> · <a href="index.html">总览</a> · <a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a> →</div>
+
+<h2>场景：研究负责人让 5 个助手分别调研竞争对手，其中一个迟迟没有交付。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>V2 默认 4 个槽含父 → 不能把 5 个子任务同时塞入默认容量；V1 是另一组默认值。〔4〕〔5〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>按子会话执行 → 完成后给父级通知；默认深度 1，并发上限未确认。〔10〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>示例扩展最多 8 tasks、4 并发 → 结果回父；这是示例的合同，不是所有 pi 宿主的默认。〔6〕〔7〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>默认 active 8、深度 1；fork 复制到上个已完成 turn → 本轮刚发现的证据须在 brief 补上。〔8〕〔9〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>按角色和 toolset 创建子 agent → 默认并发 10、深度 1 → 父级仍需检查交付。〔11〕〔12〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>每控制会话并发 8、每父 5、深度 5 → 是否继承上下文要看实际参数。〔13〕〔14〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】child 有自己的上下文处理和返回路径；不能仅用深度限制推定超时后恢复能力。〔15〕〔16〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>task 用任务描述建立子消息 → invoke/ainvoke 等待 → 最后一条消息回父；未核实通用超时、并发上限与独立 worktree。<code>deepagents@c177c9f:libs/deepagents/deepagents/middleware/subagents.py#L365-L431</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 并发槽位决定能开多少，交接内容决定父 agent 能否验收。子任务独立上下文不代表文件隔离，也不保证卡住后会自动恢复。</p>
+<h3>嵌入产品的库：年初同语言对照</h3>
+<p>〔基于代码的推演〕负责人把研究拆给子助手。</p>
+<table>
+<thead>
+<tr>
+<th>DeepAgents JS（1 月末）</th>
+<th>pi-agent-core（2 月初）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>task 建立子消息、等待 invoke、最后消息回父；非排除状态也可回传。<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/subagents.ts#L238-L257</code>；<code>deepagentsjs@6b912ab:libs/deepagents/src/middleware/subagents.ts#L391-L409</code></td>
+<td>可以自定义工具调用另一个 Agent；核心工具合同未自带完整子任务调度器。<code>pi@aa83170:packages/agent/src/types.ts#L156-L173</code></td>
+</tr>
+</tbody>
+</table>
+<p>完整取舍见<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<p>（多 agent 编排策略，如 Kimi <code>/tower</code>、<code>/swarm</code>、agent teams，见 <a href="11-multi-agent-strategies.html">11 · 多 agent 策略</a>。本页只讲各 harness 内建子 agent 的默认值。）</p>
+<h3>共识</h3>
+<ul>
+<li><strong>子 agent 有独立的消息状态和生命周期，父 agent 拿到的是经过选择的结果</strong>，不是全部中间 token。例子：Codex 可选 fresh 或 full-history，dsh 区分 spawn 和 fork，OpenCode 新建或复用 child session〔1〕〔2〕〔3〕。</li>
+<li><strong>这样设计是为了组织上下文、控制成本；工作区隔离是另一回事，要单独核对。</strong></li>
+</ul>
+<h3>关键差异</h3>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>创建、上下文与工具</th>
+<th>回父路径与默认限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>Fresh 或 FullHistory，创建参数里带 model / reasoning / type / fork 策略〔1〕〔4〕</td>
+<td>V1 默认 children <strong>6</strong>、depth <strong>1</strong>；V2 默认 concurrency <strong>4，含父 agent</strong>，子 agent 实际可用 slot 是 4−1。错误摘要上限 <strong>900 tokens</strong>，这个上限不适用于成功结果〔5〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>只有<strong>示例 extension</strong>：spawn <code>pi --mode json -p --no-session</code>，可以传 tools 和 model〔6〕</td>
+<td>示例里最多 <strong>8 tasks / 4 并发</strong>，output <strong>50*1024 bytes</strong>。这些是示例常量，不是内建默认值〔7〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>spawn 用 preset 和 output schema 开一个 fresh child；fork 只复制到<strong>上一个已完成的 turn</strong>，正在进行的 turn 不复制〔2〕〔8〕</td>
+<td>默认 depth <strong>1</strong>、active <strong>8</strong>；深度取持久信息中的约束〔9〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>fresh child 默认不复制父 history，可以通过 sessionID 复用；可以前台等待，也可以后台返回 ID〔3〕</td>
+<td>默认 depth <strong>1</strong>，<code>experimental.subagent_depth</code> 可调；完成时用一条含 sessionID/state 的 synthetic 消息加最后一条 assistant text 回父，notificationID 去重〔10〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>新建一个 AIAgent，<code>skip_context_files</code> 和 <code>skip_memory</code> 为 true，<code>clarify=None</code>；工具取父 agent 工具集的交集，再剔除 blocked 的〔11〕</td>
+<td>默认 concurrent <strong>10</strong>、depth <strong>1</strong>、timeout=None；设了正的 timeout 时下限 <strong>30s</strong>〔12〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>subagent prompt 把继承来的 history 标为 background，当前任务单独列出〔13〕</td>
+<td>每个控制会话默认 concurrent <strong>8</strong>，每父 maxChildren <strong>5</strong>，depth <strong>5</strong>，archiveAfter <strong>60 分钟</strong>〔14〕</td>
+</tr>
+<tr>
+<td>Claude Code【bundle】</td>
+<td>child 有新的 messages 和 readFileState，可以选 fork；Explore / Plan 会删掉 gitStatus；工具过滤保留 MCP，并应用 allowed/disallowed〔15〕</td>
+<td>depth&lt;<strong>5</strong> 时才保留 Agent 工具；maxTurns 可以由调用方或 agent definition 传入〔16〕</td>
+</tr>
+</tbody>
+</table>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
+<ul>
+<li><strong>长任务用户、成本敏感用户：</strong> 同时让 5 个 agent 查 5 个模块。Codex V2 默认 4 个 slot 含父，所以不会有 5 个 child 同时跑；pi 示例并发 4；Hermes 默认 10。实际吞吐还取决于 provider 限流和结果长度〔5〕〔7〕〔12〕。</li>
+<li><strong>IDE 用户：</strong> 父 agent 刚读到失败的测试，接着 fork 一个去调试。dsh 的 fork 只复制到上一个完成的 turn，所以这份失败证据要显式写进 child 的任务里〔8〕。</li>
+<li><strong>企业团队：</strong> Hermes 默认不给 child 注入个人记忆和项目文件，并收窄工具集。这降低了意外继承的风险，但父 agent 必须把交付规范写进任务〔11〕。</li>
+</ul>
+<h3>面试可讲的点</h3>
+<ol>
+<li>默认上下文是一个隐性的成本杠杆：fresh、fork 到上一完成 turn、full history，三种选择的 token 成本和遗漏风险不同。</li>
+<li>并发上限要问清是否含父、是按会话算还是按父 agent 算（OpenClaw 的 8 和 5 是两个不同的约束）〔14〕。</li>
+<li>子 agent 的“结果合同”（返回格式、长度上限、错误摘要）大多没有统一，这是 roadmap 可以补的地方。</li>
+</ol>
+<h3>引用</h3>
+<ol>
+<li><code>codex@ce0323f:codex-rs/core/src/thread_spawn.rs#L35-L150</code></li>
+<li><code>deepseek-harness@687f282:packages/subagent/subagent-spawn-in-process/src/index.ts#L35-L53</code>；<code>deepseek-harness@687f282:packages/subagent/subagent-fork-in-process/src/index.ts#L40-L77</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/subagent.ts#L154-L243</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs#L127-L155</code></li>
+<li><code>codex@ce0323f:codex-rs/core/src/session_prefix.rs#L19-L43</code>；<code>codex@ce0323f:codex-rs/core/src/config/mod.rs#L255-L266</code>；<code>codex@ce0323f:codex-rs/core/src/config/mod.rs#L1670-L1684</code>；<code>codex@ce0323f:codex-rs/core/src/tools/spec_plan.rs#L728-L742</code></li>
+<li><code>pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L298-L305</code>；<code>pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L344-L344</code></li>
+<li><code>pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L34-L37</code></li>
+<li><code>deepseek-harness@687f282:packages/subagent/subagent-fork-in-process/src/index.ts#L40-L77</code>；<code>deepseek-harness@687f282:packages/subagent/subagent/src/child-agent.ts#L179-L217</code></li>
+<li><code>deepseek-harness@687f282:packages/subagent/subagent/src/index.ts#L187-L197</code>；<code>deepseek-harness@687f282:packages/subagent/subagent/src/depth.ts#L18-L35</code></li>
+<li><code>opencode@8c173a8:packages/core/src/tool/plugin/subagent.ts#L110-L137</code>；<code>opencode@8c173a8:packages/core/src/session/subagent-completion.ts#L8-L45</code></li>
+<li><code>hermes-agent@18c525b:tools/delegate_tool.py#L275-L305</code>；<code>hermes-agent@18c525b:tools/delegate_tool_toolsets.py#L38-L82</code></li>
+<li><code>hermes-agent@18c525b:tools/delegate_tool_config.py#L17-L27</code>；<code>hermes-agent@18c525b:tools/delegate_tool_config.py#L93-L108</code>；<code>hermes-agent@18c525b:tools/delegate_tool_config.py#L139-L173</code></li>
+<li><code>openclaw@21de16f:src/agents/subagents/spawn/subagent-system-prompt.ts#L32-L37</code></li>
+<li><code>openclaw@21de16f:src/config/agent-limits.ts#L19-L45</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L636454-L636510</code>；<code>claude-code@2.1.197:bundle-split.js#L628521-L628589</code></li>
+<li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L553368-L553368</code>；<code>claude-code@2.1.197:bundle-split.js#L628521-L628537</code>；<code>claude-code@2.1.197:bundle-split.js#L636582-L636582</code></li>
+</ol><hr><div class="pnav">← <a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a> · <a href="index.html">总览</a> · <a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a> →</div></main></body></html>

@@ -1,0 +1,599 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>01 · 用场景看差异</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html" class="cur">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>01 · 用场景看差异</h1>
+<div class="pnav">← <a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a> · <a href="index.html">总览</a> · <a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a> →</div>
+
+<p>先看自己要解决的用户问题，再看默认值。除明确标出的 DeepAgents 年初快照外，横向表使用 10 月快照；pi 的 Bash、技能和会话树属于 coding-agent，不是 agent-core 库。以下均为〔基于代码的推演〕，不是速度或成功率排名；CLI、嵌入库与持久运行时分别标明。迁移选型另看<a href="15-deepagents-pi-agent-core.html">DeepAgents → pi-agent-core 决策分析</a>。</p>
+<h2>场景：独立开发者正在让 agent 改项目，看到方向不对，输入“先停手，只检查”。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>当前采样或工具结束 → 处理待收输入 → 后续模型请求调整方向；不能承诺正在执行的写入立刻停下。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>消息先入箱 → 忙时处理 steer，空闲取一条 queue → 后续步骤采纳；仅入箱不等于开始。</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>10 月普通 pi 在工具批后取 steer，结束前取 follow-up；durable 的持久输入队列另见恢复页，不能把普通内存队列当作落盘。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>steer 在下一步采纳并唤醒；followup 等下一轮；inject 只注入、不唤醒；接错入口会让用户以为没收到。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>工具批次结束 → 追加 user 消息 → 下一次模型调用看见纠正；已存工具结果不改。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>embedded 在循环边界处理 pending；Codex 路线转交另一套 turn/start，排错先辨认路线。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】工具执行后取本 agent 的 next 消息；不能由流式显示推断实时停止工具。【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>预先配置 interrupt_on → 指定工具前进入人工审批 → 批准后续跑；这是审批断点，不能直接等同于任意时刻的 steer。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 已完成的写入不会因插话自动撤销。产品应分别显示“已收到”和“模型已采纳”，并统计从插话到采纳的时间。 <a href="02-agent-loop.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/core/src/session/turn.rs#L589-L604<br>
+codex@ce0323f:codex-rs/core/src/session/turn.rs#L454-L465<br>
+codex@ce0323f:codex-rs/core/src/session/turn.rs#L718-L777<br>
+opencode@8c173a8:packages/core/src/session/runner/llm.ts#L166-L198<br>
+opencode@8c173a8:packages/core/src/session/session.ts#L145-L175<br>
+opencode@8c173a8:packages/core/src/session/inbox.ts#L490-L549<br>
+pi@c268154:packages/agent/src/agent-loop.ts#L175-L328<br>
+pi@c268154:packages/agent/src/agent.ts#L247-L253<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L154-L180<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/agent.ts#L297-L397<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/inbox.ts#L20-L65<br>
+hermes-agent@18c525b:agent/conversation_loop.py#L1650-L1699<br>
+hermes-agent@18c525b:agent/agent_runtime_helpers.py#L3758-L3792<br>
+openclaw@21de16f:packages/agent-core/src/agent-loop.ts#L229-L255<br>
+openclaw@21de16f:extensions/codex/src/conversation-binding.ts#L392-L417<br>
+claude-code@2.1.197:bundle-split.js#L675734-L675806<br>
+claude-code@2.1.197:bundle-split.js#L675848-L675911<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L121-L131
+
+</details>
+
+<h2>场景：维护大型仓库的开发者让 agent 同时读 20 个文件，并修改其中一个文件。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>安全调用共享读锁 → 其他调用取独占写锁 → 有冲突时等待；64 是进程上限，不是 64 个工具都并行。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>完整调用先持久化 → 启动执行分支 → 最后等待汇合；此处未确认路径冲突锁。</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>普通 pi 默认并行 → 任一工具标 sequential 就整批串行；edit/write 同路径排队只保护本进程。durable 的提交规则另见专页。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>先检查工具是否显式声明并发安全 → 安全的进入默认 10 个槽位的池 → 其他独占执行。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>先按路径读写冲突分组 → 安全区段最多 8 个 worker → 冲突写入形成等待屏障。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>默认并行执行 → 按调用原序提交结果；结果有序不等于共享文件无冲突。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】连续安全调用成组 → 默认最多 10 个并行 → 非安全调用隔开组。【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>工具交给 LangChain create_agent 执行；本层源码未给出可核实的全局并发数和同路径锁，不能承诺 20 个读都并行。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 等待时间取决于并发规则；是否误读旧内容或互相覆盖取决于冲突控制。并发数不能单独代表可靠性。 <a href="03-tool-execution.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/core/src/tools/parallel.rs#L205-L233<br>
+codex@ce0323f:codex-rs/tools/src/tool_executor.rs#L122-L124<br>
+codex@ce0323f:codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L135-L137<br>
+codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L68-L77<br>
+opencode@8c173a8:packages/core/src/session/runner/step.ts#L103-L153<br>
+pi@c268154:packages/agent/src/agent.ts#L253-L253<br>
+pi@c268154:packages/agent/src/agent-loop.ts#L508-L523<br>
+pi@c268154:packages/coding-agent/src/core/tools/file-mutation-queue.ts#L4-L61<br>
+deepseek-harness@687f282:packages/core/tools/src/index.ts#L268-L281<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/constants.ts#L5-L6<br>
+hermes-agent@18c525b:agent/tool_dispatch_helpers.py#L182-L258<br>
+hermes-agent@18c525b:agent/tool_executor.py#L133-L136<br>
+hermes-agent@18c525b:agent/tool_executor.py#L225-L250<br>
+openclaw@21de16f:packages/agent-core/src/agent-loop.ts#L611-L665<br>
+openclaw@21de16f:packages/agent-core/src/agent.ts#L359-L359<br>
+claude-code@2.1.197:bundle-split.js#L664199-L664249<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L239-L251
+
+</details>
+
+<h2>场景：负责发布的工程师跑测试，工具返回 5 MB 日志：开头是配置，中段是根因，结尾是失败汇总。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>进程缓冲保留头尾 → 返回受默认 10000 估算 token 预算约束 → 中段可能不可见。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>shell 留尾，通用工具留头 → 超限全文保存 → 可继续读取，默认保留 7 天。</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>bash 超过 2000 行或 50KiB 留尾 → 全文存临时文件 → 模型先看到末尾汇总。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>bash 字节限制、spill 外置、历史裁剪是不同层 → 外置结果保留头尾 → 不能把某一层阈值当全部预算。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>按 50000 字符裁剪 → 头 40% / 尾 60% → 启动配置和最终汇总都可能留下。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>按模型窗口选 16000/32000/64000 字符硬上限 → 大窗口能看到更多，但不保证根因仍在。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】Bash 留前 30000 字符 → 尾部汇总可能缺失；TaskOutput 是另一条留尾路径。【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>适用的工具结果超过默认约 20000 token（字符数/4 估算）→ 写入后端文件 → 回传头尾预览和读取路径；写入失败保留原结果，内置部分工具排除。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 若根因落在被裁掉的中段，模型需要再次按关键词读取全文。应测“错误证据可见率”，不能只测工具是否成功返回。 <a href="05-tool-output-shell.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/core/src/unified_exec/head_tail_buffer.rs#L5-L19<br>
+codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L68-L77<br>
+codex@ce0323f:codex-rs/core/src/unified_exec/mod.rs#L218-L223<br>
+opencode@8c173a8:packages/core/src/tool-output.ts#L13-L16<br>
+opencode@8c173a8:packages/core/src/tool-output.ts#L50-L90<br>
+opencode@8c173a8:packages/core/src/tool-output.ts#L129-L135<br>
+opencode@8c173a8:packages/core/src/shell.ts#L230-L245<br>
+pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L11-L13<br>
+pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L78-L80<br>
+pi@c268154:packages/coding-agent/src/core/tools/truncate.ts#L168-L170<br>
+pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L255-L255<br>
+deepseek-harness@687f282:packages/shell/bash-local/src/index.ts#L100-L106<br>
+deepseek-harness@687f282:packages/spill/spill-policy/src/index.ts#L24-L51<br>
+deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L414-L417<br>
+deepseek-harness@687f282:packages/compaction/compaction-tool-result-pruner/src/config.ts#L6-L37<br>
+deepseek-harness@687f282:packages/bundle/base/cordis.patch.yml#L424-L430<br>
+hermes-agent@18c525b:tools/tool_output_limits.py#L13-L54<br>
+hermes-agent@18c525b:tools/terminal_tool_result.py#L151-L154<br>
+hermes-agent@18c525b:tools/tool_output_truncate.py#L12-L32<br>
+openclaw@21de16f:src/agents/tool-result-limits.ts#L6-L40<br>
+openclaw@21de16f:src/agents/bash-tools.exec-runtime.ts#L92-L105<br>
+claude-code@2.1.197:bundle-split.js#L584666-L584667<br>
+claude-code@2.1.197:bundle-split.js#L624367-L624375<br>
+claude-code@2.1.197:bundle-split.js#L657987-L657993<br>
+deepagents@c177c9f:libs/deepagents/deepagents/middleware/filesystem.py#L995-L1044<br>
+deepagents@c177c9f:libs/deepagents/deepagents/middleware/filesystem.py#L1200-L1218
+
+</details>
+
+<h2>场景：分析师在 200K 窗口模型上连续研究 3 小时，还要保留一小时前找到的原始证据。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>默认自动压缩上限为 180000 token → 按 provider 走本地或远程压缩 → 不能把两条路线视为同一种摘要。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>按 20000 buffer 算出 180000 阈值 → 保留近期目标 15000 token → 较早证据进入摘要。</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>CLI 超过 183616 触发；durable 可在 150848 提前后台摘要 → 阻塞线仍为 183616；近期目标 20000。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>取 80% 窗口与扣除输出预留、65536 后的较小值 → 保留近期与工具配对；输出预算未知不能给单一数值。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>200K 属小窗口分支，比例至少 0.75 → 再考虑输出预算和下限 → 保护头 3、尾 20 条。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>按 reserve 公式留空间 → 到线压缩；deterministic 策略可直接删除旧消息并标记，不生成摘要。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】输出预算至少 20000 时，触发点 167000 → 连续压缩另有保护；保留策略未在本页确认。【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python / JS）</td>
+<td>Python 有模型窗口 profile 时以 85% 触发、保留 10%；缺少 profile 则 170000 / 6 条。JS 当时固定 170000 / 6 条，不能混用两者公式。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 达到阈值会影响哪些原文仍在下一次请求里。摘要能延续任务，却可能损失细节；重要证据应能从文件重新读取。 <a href="07-context-compaction.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/protocol/src/openai_models.rs#L520-L540<br>
+codex@ce0323f:codex-rs/protocol/src/openai_models.rs#L393-L395<br>
+codex@ce0323f:codex-rs/core/src/session/turn.rs#L1533-L1610<br>
+codex@ce0323f:codex-rs/core/src/compact.rs#L64-L64<br>
+codex@ce0323f:codex-rs/core/src/compact.rs#L390-L407<br>
+opencode@8c173a8:packages/core/src/session/compaction.ts#L94-L102<br>
+opencode@8c173a8:packages/core/src/session/compaction.ts#L145-L233<br>
+opencode@8c173a8:packages/core/src/session/compaction.ts#L319-L372<br>
+opencode@8c173a8:packages/core/src/session/compaction.ts#L704-L743<br>
+opencode@8c173a8:packages/core/src/session/compaction.ts#L906-L917<br>
+pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L126-L130<br>
+pi@c268154:packages/coding-agent/src/core/compaction/compaction.ts#L267-L269<br>
+pi@c268154:packages/coding-agent/src/core/settings-manager.ts#L821-L878<br>
+pi@c268154:packages/durable/src/harness/agent.ts#L27-L36<br>
+pi@c268154:packages/durable/src/harness/generation.ts#L327-L337<br>
+deepseek-harness@687f282:packages/compaction/compaction-basic/src/config.ts#L75-L138<br>
+deepseek-harness@687f282:packages/compaction/compaction-basic/src/config.ts#L172-L197<br>
+deepseek-harness@687f282:packages/compaction/compaction-basic/src/region.ts#L107-L139<br>
+deepseek-harness@687f282:packages/compaction/compaction-basic/src/index.ts#L158-L200<br>
+hermes-agent@18c525b:agent/context_compressor.py#L1151-L1152<br>
+hermes-agent@18c525b:agent/context_compressor.py#L2760-L2816<br>
+hermes-agent@18c525b:agent/agent_init.py#L1523-L1575<br>
+hermes-agent@18c525b:hermes_cli/config_defaults.py#L588-L592<br>
+openclaw@21de16f:src/agents/sessions/settings-manager.ts#L348-L368<br>
+openclaw@21de16f:src/agents/agent-settings.ts#L26-L54<br>
+openclaw@21de16f:src/agents/agent-compaction-constants.ts#L1-L16<br>
+openclaw@21de16f:packages/agent-core/src/harness/compaction/compaction.ts#L260-L268<br>
+openclaw@21de16f:packages/agent-core/src/harness/compaction/compaction.ts#L585-L648<br>
+openclaw@21de16f:src/agents/sessions/agent-session-compaction.ts#L392-L410<br>
+claude-code@2.1.197:bundle-split.js#L556251-L556328<br>
+claude-code@2.1.197:bundle-split.js#L556366-L556394<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L144-L162<br>
+deepagentsjs@6b912ab:libs/deepagents/src/agent.ts#L187-L192
+
+</details>
+
+<h2>场景：客户经理周一告诉 agent“周报用中文、不要提旧客户”，周五新开会话。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>满足后台记忆筛选条件 → 两阶段生成和整理 → 按 feature 设置注入；不是每条纠正必然成为记忆。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>发现 skill → 经权限读取正文；默认从纠正自动生成记忆未确认。</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>扫描技能目录 → 模型按需读正文；所核核心没有确认自动提炼这条偏好的闭环。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>发现并监听 skill 文件 → 变化可被发现；监听不是自动从聊天学习。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>显式写 MEMORY/USER → 下次构建 system 注入；当前冻结快照不立即变，预算分别 2200/1375 字符。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>memory_search/get 检索 → promotion/dreaming 另有处理；默认周期与统一 TTL 未确认。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】按 MEMORY 的行数和字符预算加载 → 提示模型写记忆；不保证每次纠正都会写入。【bundle】；；【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>默认文件存在线程状态；配置 StoreBackend 可跨线程保存，CompositeBackend 按路径分流；仍需产品决定存什么、如何删除。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 验收不是模型说“记住了”，而是下一次任务是否检索、采用并正确遗忘。存储、筛选、注入要分别有证据。 <a href="09-memory-skills.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/memories/write/templates/memories/consolidation.md#L20-L50<br>
+codex@ce0323f:codex-rs/ext/memories/src/extension.rs#L45-L101<br>
+codex@ce0323f:codex-rs/ext/skills/src/host_roots.rs#L80-L173<br>
+codex@ce0323f:codex-rs/memories/write/src/start.rs#L20-L91<br>
+codex@ce0323f:codex-rs/config/src/types.rs#L55-L60<br>
+codex@ce0323f:codex-rs/config/src/types.rs#L376-L435<br>
+codex@ce0323f:codex-rs/memories/write/src/lib.rs#L80-L101<br>
+codex@ce0323f:codex-rs/memories/write/src/phase2.rs#L294-L339<br>
+opencode@8c173a8:packages/core/src/config/plugin/skill.ts#L83-L121<br>
+opencode@8c173a8:packages/core/src/skill/discovery.ts#L91-L106<br>
+opencode@8c173a8:packages/core/src/skill/discovery.ts#L145-L172<br>
+opencode@8c173a8:packages/core/src/tool/plugin/skill.ts#L47-L66<br>
+pi@c268154:packages/coding-agent/src/core/skills.ts#L161-L166<br>
+pi@c268154:packages/coding-agent/src/core/skills.ts#L358-L385<br>
+pi@c268154:packages/coding-agent/src/core/resource-loader.ts#L232-L273<br>
+pi@c268154:packages/coding-agent/src/core/extensions/types.ts#L933-L937<br>
+deepseek-harness@687f282:packages/skill/skill-filesystem/src/index.ts#L244-L263<br>
+hermes-agent@18c525b:tools/memory_tool_store.py#L618-L621<br>
+hermes-agent@18c525b:tools/memory_tool.py#L1-L60<br>
+hermes-agent@18c525b:tools/memory_tool_store.py#L222-L253<br>
+openclaw@21de16f:extensions/memory-core/index.ts#L296-L322<br>
+openclaw@21de16f:extensions/memory-core/index.ts#L375-L409<br>
+openclaw@21de16f:extensions/memory-core/src/dreaming.ts#L192-L243<br>
+openclaw@21de16f:extensions/memory-core/src/dreaming.ts#L261-L305<br>
+claude-code@2.1.197:bundle-split.js#L464523-L464523<br>
+claude-code@2.1.197:bundle-split.js#L513529-L513529<br>
+claude-code@2.1.197:bundle-split.js#L513732-L513741<br>
+claude-code@2.1.197:bundle-split.js#L513781-L513829<br>
+deepagents@c177c9f:libs/deepagents/deepagents/backends/state.py#L28-L37<br>
+deepagents@c177c9f:libs/deepagents/deepagents/backends/store.py#L28-L58<br>
+deepagents@c177c9f:libs/deepagents/deepagents/backends/composite.py#L37-L45
+
+</details>
+
+<h2>场景：研究负责人让 5 个助手分别调研竞争对手，其中一个迟迟没有交付。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>V2 默认 4 个槽含父 → 不能把 5 个子任务同时塞入默认容量；V1 是另一组默认值。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>按子会话执行 → 完成后给父级通知；默认深度 1，并发上限未确认。</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>示例扩展最多 8 tasks、4 并发 → 结果回父；这是示例的合同，不是所有 pi 宿主的默认。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>默认 active 8、深度 1；fork 复制到上个已完成 turn → 本轮刚发现的证据须在 brief 补上。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>按角色和 toolset 创建子 agent → 默认并发 10、深度 1 → 父级仍需检查交付。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>每控制会话并发 8、每父 5、深度 5 → 是否继承上下文要看实际参数。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】child 有自己的上下文处理和返回路径；不能仅用深度限制推定超时后恢复能力。【bundle】；【bundle】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>task 用任务描述建立子消息 → invoke/ainvoke 等待 → 最后一条消息回父；未核实通用超时、并发上限与独立 worktree。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 并发槽位决定能开多少，交接内容决定父 agent 能否验收。子任务独立上下文不代表文件隔离，也不保证卡住后会自动恢复。 <a href="10-subagents.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+codex@ce0323f:codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs#L127-L155<br>
+codex@ce0323f:codex-rs/core/src/session_prefix.rs#L19-L43<br>
+codex@ce0323f:codex-rs/core/src/config/mod.rs#L255-L266<br>
+codex@ce0323f:codex-rs/core/src/config/mod.rs#L1670-L1684<br>
+codex@ce0323f:codex-rs/core/src/tools/spec_plan.rs#L728-L742<br>
+opencode@8c173a8:packages/core/src/tool/plugin/subagent.ts#L110-L137<br>
+opencode@8c173a8:packages/core/src/session/subagent-completion.ts#L8-L45<br>
+pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L298-L305<br>
+pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L344-L344<br>
+pi@c268154:packages/coding-agent/examples/extensions/subagent/index.ts#L34-L37<br>
+deepseek-harness@687f282:packages/subagent/subagent-fork-in-process/src/index.ts#L40-L77<br>
+deepseek-harness@687f282:packages/subagent/subagent/src/child-agent.ts#L179-L217<br>
+deepseek-harness@687f282:packages/subagent/subagent/src/index.ts#L187-L197<br>
+deepseek-harness@687f282:packages/subagent/subagent/src/depth.ts#L18-L35<br>
+hermes-agent@18c525b:tools/delegate_tool.py#L275-L305<br>
+hermes-agent@18c525b:tools/delegate_tool_toolsets.py#L38-L82<br>
+hermes-agent@18c525b:tools/delegate_tool_config.py#L17-L27<br>
+hermes-agent@18c525b:tools/delegate_tool_config.py#L93-L108<br>
+hermes-agent@18c525b:tools/delegate_tool_config.py#L139-L173<br>
+openclaw@21de16f:src/agents/subagents/spawn/subagent-system-prompt.ts#L32-L37<br>
+openclaw@21de16f:src/config/agent-limits.ts#L19-L45<br>
+claude-code@2.1.197:bundle-split.js#L636454-L636510<br>
+claude-code@2.1.197:bundle-split.js#L628521-L628589<br>
+claude-code@2.1.197:bundle-split.js#L553368-L553368<br>
+claude-code@2.1.197:bundle-split.js#L628521-L628537<br>
+claude-code@2.1.197:bundle-split.js#L636582-L636582<br>
+deepagents@c177c9f:libs/deepagents/deepagents/middleware/subagents.py#L365-L431
+
+</details>
+
+<h2>场景：运营人员让 agent 用一个脚本顺序拉 200 份付费客户报表，最后建汇总工单；第 160 份之后进程崩溃。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>dsh</td>
+<td>模型和顶层工具调用前先写检查点，失败就停 → 恢复补“中断”记录；脚本内未单独记录的 160 次 API 进度不能恢复。若模型重跑整段脚本且脚本无自己的缓存，前 160 次会重复付费；重跑不是必然动作。</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>pi coding-agent 恢复会话树。durable 的 codemode 若前 160 个结果已写 journal，恢复时重放脚本并复用它们，再处理第 161 次；未完成调用仍看 safe/unsafe，代码与环境必须兼容。</td>
+</tr>
+<tr>
+<td>Codex</td>
+<td>符合普通会话、未取消、单一本地环境等条件时可冷启动接回被中断轮次 → 不恢复脚本执行栈；重跑脚本可能重复付费。</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>恢复持久消息 → 未完成工具标失败 → 模型可重新发起；至少一次执行允许重复副作用。</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>工具前先 flush，结果先存后回调 → 会话可保留已知结果；未确认任意脚本的逐调用续跑。</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>恢复 native snapshot，拒绝过期写者 → 并不由此恢复脚本内部的 API 进度；Codex 路线另算。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【文档】按 prompt 保存对话和跟踪文件的检查点 → 可回退；Bash 文件改动不跟踪，也不是脚本执行进度。【文档】</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>配置 checkpointer 后把状态持久化交给 LangGraph → 可以有状态恢复；此封装未证明一个普通工具内部 160 次 API 各自落盘，不承诺从第 161 次续跑。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> dsh 的恢复边界是模型可见日志；pi-durable 的 codemode 可细到脚本内已记录的调用。差距来自调用粒度，不能把“支持 resume”当作同一承诺。 <a href="12-durability-recovery.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L29-L37<br>
+deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L52-L82<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900<br>
+deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/index.ts#L1407-L1445<br>
+deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L1-L27<br>
+deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115<br>
+pi@c268154:packages/coding-agent/src/core/session-manager.ts#L977-L1015<br>
+pi@c268154:packages/coding-agent/src/core/session-manager.ts#L1628-L1683<br>
+pi@c268154:packages/durable/src/harness/scheduler.ts#L291-L310<br>
+pi@c268154:packages/durable/src/harness/submissions.ts#L169-L188<br>
+pi@c268154:packages/durable/src/session/session.ts#L854-L861<br>
+pi@c268154:packages/durable/README.md#L688-L688<br>
+pi@c268154:packages/durable/src/harness/tool.ts#L132-L192<br>
+pi@c268154:packages/durable/src/codemode/codemode.ts#L956-L1000<br>
+codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54<br>
+codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49<br>
+codex@ce0323f:codex-rs/core/src/session/daemon_recovery.rs#L23-L56<br>
+opencode@8c173a8:packages/core/src/session/inbox.ts#L113-L180<br>
+opencode@8c173a8:packages/core/src/session/inbox.ts#L320-L335<br>
+opencode@8c173a8:packages/core/src/session/projector.ts#L618-L647<br>
+opencode@8c173a8:packages/core/src/session/execution/restart.ts#L23-L61<br>
+opencode@8c173a8:packages/core/src/session/execution/restart.ts#L101-L188<br>
+hermes-agent@18c525b:agent/tool_executor.py#L1828-L1847<br>
+hermes-agent@18c525b:agent/turn_tool_round.py#L130-L150<br>
+hermes-agent@18c525b:agent/tool_executor.py#L199-L222<br>
+hermes-agent@18c525b:agent/turn_facade_lease.py#L45-L52<br>
+openclaw@21de16f:src/config/sessions/session-sqlite-target-paths.ts#L22-L45<br>
+openclaw@21de16f:src/agents/sessions/session-manager-native-persistence.ts#L49-L87<br>
+openclaw@21de16f:extensions/codex/src/conversation-binding.ts#L392-L417<br>
+openclaw@21de16f:src/agents/sessions/agent-session-base.ts#L348-L378<br>
+openclaw@21de16f:src/agents/sessions/agent-session-base.ts#L398-L413<br>
+claude-code-docs:checkpointing.md#L13-L22<br>
+claude-code-docs:checkpointing.md#L70-L97<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L121-L131<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L239-L251
+
+</details>
+
+<h2>场景：做客户运营的团队把长任务部署到云端：网页断线后重发，两个 worker 又同时接手同一会话。</h2>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi-durable</td>
+<td>同 conversation/requestId/type 返回旧 submission → 不更新旧 payload；新 ID 仍会入队。Session 内提交串行，但两个进程仍需宿主保证单写者。</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>OS flock / Windows semaphore 拒绝第二个日志写者 → 解决写者竞争；不能据此推导网页请求去重。</td>
+</tr>
+<tr>
+<td>Codex</td>
+<td>按条件交接 interrupted turn → 冷启动恢复；本页证据未确认同 requestId 的通用入队去重。</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【文档】checkpoint 支持对话与文件回退 → 不等于网页去重或云端写者互斥。【文档】</td>
+</tr>
+<tr>
+<td>OpenCode / Hermes / OpenClaw</td>
+<td>OpenCode 按 inbox ID 去重；Hermes 续租约；OpenClaw 用写者代际拒绝旧快照。它们防的是不同失败窗口，见<a href="12-durability-recovery.html">持久化与恢复</a>。</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>checkpointer/store 由调用方传入 → 能持久到哪里取决于部署；该接口不证明云上单写者锁或业务请求去重。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 输入只入队一次、工具只执行一次、只有一个写者，是三个独立要求。下面把浏览器重试和多 worker 接管分开验收。 <a href="14-pi-durable.html">查看技术细节与出处</a>。</p>
+<details>
+<summary>本场景出处</summary>
+
+pi@c268154:packages/durable/README.md#L688-L688<br>
+pi@c268154:packages/durable/src/session/session.ts#L854-L861<br>
+pi@c268154:packages/durable/src/harness/submissions.ts#L169-L220<br>
+deepseek-harness@687f282:packages/session/session-checkpoint-policy/src/index.ts#L29-L82<br>
+deepseek-harness@687f282:packages/core/agent-loop/src/index.ts#L875-L900<br>
+deepseek-harness@687f282:packages/session/session-persistence-jsonl/src/lease.ts#L70-L115<br>
+codex@ce0323f:codex-rs/app-server/src/request_processors/daemon_snapshot.rs#L15-L54<br>
+codex@ce0323f:codex-rs/app-server/src/daemon_thread_recovery.rs#L30-L49<br>
+codex@ce0323f:codex-rs/core/src/session/daemon_recovery.rs#L23-L56<br>
+claude-code-docs:checkpointing.md#L13-L22<br>
+claude-code-docs:checkpointing.md#L55-L56<br>
+claude-code-docs:checkpointing.md#L70-L97<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L121-L131<br>
+deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L239-L251
+
+</details>
+
+<h2>面试时先问失败发生在哪一刻</h2>
+<p>200 份报表的例子里，dsh 能补齐模型看到的中断记录；pi-durable 在兼容的 codemode 环境中可复用已写 journal 的内部调用结果。两者都不能单靠日志保证外部工单只创建一次，业务幂等键仍必要。网页重复入队、多 worker 争写、外部操作已成功但结果未落盘，须分开验收。详见<a href="12-durability-recovery.html">持久化与恢复</a>和<a href="14-pi-durable.html">pi-durable</a>。</p><hr><div class="pnav">← <a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a> · <a href="index.html">总览</a> · <a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a> →</div></main></body></html>

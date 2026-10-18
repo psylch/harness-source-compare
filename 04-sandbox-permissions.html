@@ -1,12 +1,60 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>03 · 审批与 OS 隔离：两道不同的边界</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html" class="cur">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>03 · 审批与 OS 隔离：两道不同的边界</h1>
-<div class="pnav">← <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>04 · 审批与 OS 隔离：两道不同的边界</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html" class="cur">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>04 · 审批与 OS 隔离：两道不同的边界</h1>
+<div class="pnav">← <a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a> →</div>
 
-<h2>共识</h2>
+<h2>场景：企业员工在笔记本上批准 agent 清理目录；命令里包含 rm 和网络下载。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>先走审批配置 → Linux 进程进入 bwrap/seccomp 限制；macOS、Windows 是各自的实现。〔1〕〔4〕〔5〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>匹配 action/resource 规则 → 未匹配则询问 → 本地 spawner 执行；默认 OS 隔离未确认。〔12〕〔13〕</td>
+</tr>
+<tr>
+<td>pi</td>
+<td>扩展可以拒绝调用 → 默认 bash 直接启动本机进程；放行后不能假定有 OS 沙箱。〔2〕〔8〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>按 preset 审批 → 平台 runner 隔离；申请放宽而审批服务缺失时拒绝执行。〔6〕〔7〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>审批或 middleware 拦截 → 默认 local 后端运行；有其他后端不代表当前已隔离。〔9〕〔10〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>按更严格的审批策略判断 → sandbox 默认关闭；启用后默认 docker，须核对配置。〔3〕〔11〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【文档】规则可限制命令、路径、域名；启用的沙箱按 macOS/Linux 分支，原生 Windows 不适用该沙箱。〔15〕〔16〕</td>
+</tr>
+<tr>
+<td>DeepAgents（1 月 Python）</td>
+<td>默认 StateBackend 是状态里的虚拟文件 → execute 需要支持 SandboxBackendProtocol 的后端，否则报错；协议名不证明自定义工具受到 OS 隔离。<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L121-L131</code>；<code>deepagents@c177c9f:libs/deepagents/deepagents/graph.py#L169-L169</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 弹窗决定是否放行，操作系统隔离决定放行之后能碰到什么。要按实际平台和后端验收删除范围与网络访问。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<h3>共识</h3>
 <ul>
 <li><strong>都有审批层，但审批不是一个布尔值：</strong> 谁来批、能批到什么粒度、批完能否改参数，各家都不同。</li>
 <li><strong>审批 ≠ 隔离：</strong> “允许运行 npm”说明不了这个进程能不能读到宿主上的密钥。隔离要看 OS 级的文件系统和系统调用限制〔1〕〔2〕〔3〕。</li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <table>
 <thead>
 <tr>
@@ -53,19 +101,19 @@
 </tr>
 </tbody>
 </table>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>企业安全团队：</strong> 比较部署方案时，要记录实际启用的 backend 和 profile，不能给产品贴一个永久的“有沙箱”标签。比如 Codex 在 Linux 上有 OS 级限制，而 pi 默认本地 spawn、OpenClaw sandbox 默认 off〔1〕〔2〕〔3〕。</li>
 <li><strong>Windows 用户：</strong> 隔离能力按平台分支。Claude 文档明确写了原生 Windows 不支持这套沙箱，Codex 和 dsh 在 Windows 上走的是另一套 backend〔16〕〔5〕〔7〕。</li>
 <li><strong>非工程师：</strong> 按 project 范围存的“always”规则（OpenCode）和按会话生效的“session”授权（Hermes），持续时间不同。要让用户能看到当前有哪些放行规则在生效〔12〕〔9〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li>拆成两个指标分别度量：<strong>审批负担</strong>（每任务的弹窗次数、误批准率）和<strong>爆炸半径</strong>（批准之后进程能接触到的资源）。</li>
 <li>缺少审批服务时是 fail-closed 还是 fail-open（dsh 是 fail-closed），本身就是一个产品决策点〔6〕。</li>
 <li>审批 UI 的竞态问题：OpenClaw 先注册再报告 pending 的做法，是可以举出来的一个细节〔11〕。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>codex@ce0323f:codex-rs/linux-sandbox/src/lib.rs#L1-L5</code></li>
 <li><code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L97-L136</code>；<code>pi@c268154:packages/coding-agent/src/core/tools/bash.ts#L215-L224</code></li>
@@ -83,4 +131,4 @@
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L810524-L810524</code>；<code>claude-code@2.1.197:bundle-split.js#L763416-L763416</code></li>
 <li>【文档】<code>claude-code-docs:permissions.md#L95-L146</code></li>
 <li>【文档】<code>claude-code-docs:sandboxing.md#L9-L13</code>；<code>claude-code-docs:sandboxing.md#L55-L58</code></li>
-</ol><hr><div class="pnav">← <a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a> · <a href="index.html">总览</a> · <a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a> →</div></main></body></html>

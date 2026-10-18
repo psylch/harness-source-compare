@@ -1,8 +1,52 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-agent-loop.html">01 · Agent loop：step、插话与重试</a><a href="02-tool-execution.html">02 · 工具执行：调度、并发、编辑与错误回填</a><a href="03-sandbox-permissions.html">03 · 审批与 OS 隔离：两道不同的边界</a><a href="04-tool-output-shell.html">04 · 工具输出截断与 shell 生命周期</a><a href="05-prompt-assembly.html">05 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="07-mcp-tool-integration.html" class="cur">07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="09-subagents.html">09 · 子 agent：独立上下文不等于独立文件系统</a><a href="10-multi-agent-strategies.html">10 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="11-durability-recovery.html">11 · 持久化与恢复：保证要落在失败窗口上</a><a href="12-extensibility-hooks.html">12 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="13-pi-durable.html">13 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="14-evaluation-metrics.html">14 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="15-community-pain-points.html">15 · 社区痛点 → roadmap 优先级</a><a href="16-interview-points.html">16 · 面试可讲的 8 个细节</a><a href="17-unconfirmed.html">17 · 证据边界：未能在代码中确认的点</a><a href="18-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>07 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</h1>
-<div class="pnav">← <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html" class="cur">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</h1>
+<div class="pnav">← <a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div>
 
-<p>（扩展的权限边界见 <a href="12-extensibility-hooks.html">12</a>，工具声明在 prompt 中的位置见 <a href="05-prompt-assembly.html">05</a>。）</p>
-<h2>共识</h2>
+<h2>场景：企业员工接入 80 个 MCP 工具，只想查一次客户记录。</h2>
+<p>〔基于代码的推演〕下表按所引快照描述；Claude Code 的文档或 bundle 证据单独标注。</p>
+<table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>从用户操作到结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>搜索可用时 MCP 工具延迟声明 → 搜索命中 → 下一轮提供工具。〔12〕〔27〕</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>按配置把工具放 codemode 目录 → 目录放不下则调用 search → 再执行。〔13〕〔28〕</td>
+</tr>
+<tr>
+<td>pi / pi-durable</td>
+<td>CLI MCP 默认 codemode，先列命名空间再搜索；durable 独立 tool_search 扩展加载后在分支持续保留。〔14〕〔29〕〔30〕</td>
+</tr>
+<tr>
+<td>dsh</td>
+<td>默认 native 发送可见 schema → 80 个工具不会自动切换；配置 ptc 才变成代码调用入口。〔15〕</td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>有可延迟工具就启用搜索 → 经 search/describe/call 桥使用 → 日志需保留真实工具名。〔16〕〔31〕</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>默认启用搜索 → describe → dispatch_action；不是直接暴露所有工具。〔17〕〔32〕</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>【bundle】默认开启工具搜索；auto 模式另按窗口 10% 判断，provider 路径有例外。〔33〕〔34〕</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么重要：</strong> 把全部工具说明放进每次请求会占窗口；先检索则多一次选择步骤。要同时看工具声明成本、检索命中率和首次调用成功率。</p>
+<h2>技术细节与出处</h2>
+<p><strong>pi 的层次：</strong> <code>agent-core</code> 是循环与事件库；Bash、会话文件、自动压缩、技能和扩展等条目按引用归属 <code>coding-agent</code>；<code>durable</code> 是另一个持久运行时。下表的 10 月能力不能倒推为年初的库选型理由。</p>
+<p>术语速读：step 是一次模型请求，turn 是一段任务；hook / middleware 是执行前后插入的业务逻辑；schema 是工具参数格式；checkpoint 是恢复检查点，journal 是已完成调用的结果日志；backend 是实际存储或执行后端；token 是模型计量文本的单位。</p>
+<p>（扩展的权限边界见 <a href="13-extensibility-hooks.html">13</a>，工具声明在 prompt 中的位置见 <a href="06-prompt-assembly.html">06</a>。）</p>
+<h3>共识</h3>
 <ul>
 <li><strong>传输方式：</strong> 都支持 stdio 和 Streamable HTTP，Hermes 和 OpenClaw 还支持 SSE〔1〕〔2〕〔3〕〔4〕〔5〕〔6〕。</li>
 <li><strong>命名：</strong> 都会给工具名加 server 前缀并清理字符，超长或冲突时加 hash 或序号；模型看到的名字和真正发给 server 的原名是分开存的〔7〕〔8〕〔9〕〔10〕〔11〕。</li>
@@ -19,7 +63,7 @@
 <p><strong>MCP 不会获得宿主 system/loop/UI 的权限，</strong> 但多数实现会在调用前走宿主的权限检查〔18〕〔19〕。</p>
 </li>
 </ul>
-<h2>关键差异</h2>
+<h3>关键差异</h3>
 <p><strong>加载与传输</strong></p>
 <table>
 <thead>
@@ -165,7 +209,7 @@
 - <strong>OpenCode：</strong> 调用前执行 <code>permission.assert</code>〔19〕。
 - <strong>Hermes：</strong> 对 <code>trust: untrusted</code> 的 server，只有 <code>readOnlyHint</code> 严格为 True 的工具免审批，其余先征求一次同意，审批出错就阻止〔18〕。
 - <strong>pi：</strong> 项目信任只控制是否加载项目级 MCP 配置，不等于逐个工具的审批〔3〕。</p>
-<h2>对不同用户的影响（基于控制流的情景推演）</h2>
+<h3>对不同用户的影响（基于控制流的情景推演）</h3>
 <ul>
 <li><strong>重度用户、成本敏感用户：</strong> 接了 10 个 MCP server、几百个工具。Codex、Hermes、OpenClaw、Claude 默认都会延迟加载，pi 默认走 codemode；dsh 默认 native 全量声明，要手动切到 ptc。不切换的话，工具声明会持续占用上下文和缓存前缀〔12〕〔16〕〔17〕〔33〕〔14〕〔15〕。</li>
 <li>
@@ -181,13 +225,13 @@
 </li>
 <li><strong>企业团队：</strong> 超时默认值差异很大，从 dsh/pi 的 60s 到 OpenCode 的 12 小时。长时间运行的 MCP 工具在不同 harness 上会表现为“超时失败”或者“一直挂着”〔4〕〔3〕〔2〕。</li>
 </ul>
-<h2>面试可讲的点</h2>
+<h3>面试可讲的点</h3>
 <ol>
 <li><strong>工具多了怎么办：</strong> 各家已经趋同到“目录 + 检索 + 按需加载”。真正的产品决策是三件事：触发条件（总是 / 按阈值 / 按配置）、加载后的调用方式（原生声明还是桥接）、压缩后是否保留。</li>
 <li><strong>两类可度量的指标：</strong> 工具检索的命中率和“检索后首次调用成功率”；工具声明占用的上下文比例。</li>
-<li><strong>社区诉求：</strong> pi 用户要求兼容 Claude 的 <code>.mcp.json</code> 和 Stateless MCP；Claude 用户报告 MCP elicitation 被自动拒绝（见 <a href="15-community-pain-points.html">15</a>）。跨 harness 的 MCP 配置兼容是低成本、高收益的 roadmap 项。</li>
+<li><strong>社区诉求：</strong> pi 用户要求兼容 Claude 的 <code>.mcp.json</code> 和 Stateless MCP；Claude 用户报告 MCP elicitation 被自动拒绝（见 <a href="18-community-pain-points.html">18</a>）。跨 harness 的 MCP 配置兼容是低成本、高收益的 roadmap 项。</li>
 </ol>
-<h2>引用</h2>
+<h3>引用</h3>
 <ol>
 <li><code>codex@ce0323f:codex-rs/config/src/config_toml.rs#L295-L299</code>；<code>codex@ce0323f:codex-rs/config/src/mcp_types.rs#L266-L288</code>；<code>codex@ce0323f:codex-rs/codex-mcp/src/connection_manager.rs#L394-L429</code>；<code>codex@ce0323f:codex-rs/codex-mcp/src/rmcp_client.rs#L104-L105</code></li>
 <li><code>opencode@8c173a8:packages/core/src/config/plugin/mcp.ts#L37-L55</code>；<code>opencode@8c173a8:packages/core/src/mcp/client.ts#L34-L37</code>；<code>opencode@8c173a8:packages/core/src/mcp/client.ts#L247-L281</code></li>
@@ -225,4 +269,4 @@
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L677427-L677444</code>；<code>claude-code@2.1.197:bundle-split.js#L677510-L677525</code></li>
 <li>【bundle】<code>claude-code@2.1.197:bundle-split.js#L677465-L677500</code></li>
 <li>【文档】<code>claude-code-docs:mcp.md#L1456-L1458</code>；<code>claude-code-docs:mcp.md#L1476-L1485</code></li>
-</ol><hr><div class="pnav">← <a href="06-context-compaction.html">06 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="08-memory-skills.html">08 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div></main></body></html>
+</ol><hr><div class="pnav">← <a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a> · <a href="index.html">总览</a> · <a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a> →</div></main></body></html>

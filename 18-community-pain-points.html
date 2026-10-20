@@ -1,9 +1,25 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>18 · 社区痛点 → roadmap 优先级</title><link rel="stylesheet" href="style.css"></head><body><nav class="side"><h2>Harness 源码对比</h2><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a><a href="01-scenarios.html">01 · 用场景看差异</a><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a><a href="18-community-pain-points.html" class="cur">18 · 社区痛点 → roadmap 优先级</a><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></nav><main><h1>18 · 社区痛点 → roadmap 优先级</h1>
+<!doctype html><html lang="zh-CN" class="no-js"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>18 · 社区痛点 → roadmap 优先级</title>
+<link rel="stylesheet" href="https://psylch.github.io/assets/report.css">
+<style>
+.pnav{font:13px/1.8 var(--sans);color:var(--mute);margin:-6px 0 22px}
+.side{padding:2px 18px}
+.side details{border:0;padding:0}
+.side summary{font:11px/1.6 var(--mono);letter-spacing:.24em;color:var(--mute);padding:10px 28px 10px 0}
+.side summary::after{top:6px}
+.side ul{list-style:none;padding:0 0 12px;margin:0}
+.side li{font-size:14px;line-height:1.6;margin:0 0 6px;break-inside:avoid}
+.side a.cur{color:var(--accent)}
+.report td code{word-break:break-all}
+</style>
+</head><body class="report"><main class="wide">
+<a class="back" href="https://psylch.github.io/">← psylch</a>
+<h1>18 · 社区痛点 → roadmap 优先级</h1>
 <div class="pnav">← <a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> · <a href="index.html">总览</a> · <a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a> →</div>
+<nav class="toc cols side"><details><summary>Harness 源码对比</summary><ul><li><a href="index.html">Agent Harness 源码级对比 · 结构化版（总览）</a></li><li><a href="01-scenarios.html">01 · 用场景看差异</a></li><li><a href="02-agent-loop.html">02 · Agent loop：step、插话与重试</a></li><li><a href="03-tool-execution.html">03 · 工具执行：调度、并发、编辑与错误回填</a></li><li><a href="04-sandbox-permissions.html">04 · 审批与 OS 隔离：两道不同的边界</a></li><li><a href="05-tool-output-shell.html">05 · 工具输出截断与 shell 生命周期</a></li><li><a href="06-prompt-assembly.html">06 · Prompt / 上下文拼装顺序与缓存前缀</a></li><li><a href="07-context-compaction.html">07 · 上下文计量与压缩：触发公式、保留什么、图片与缓存</a></li><li><a href="08-mcp-tool-integration.html">08 · MCP 与工具接入：加载、进入上下文、工具多了怎么办</a></li><li><a href="09-memory-skills.html">09 · 记忆与技能：存下来、选出来、再注入是三件事</a></li><li><a href="10-subagents.html">10 · 子 agent：独立上下文不等于独立文件系统</a></li><li><a href="11-multi-agent-strategies.html">11 · 多 agent 策略：从 Kimi /tower 到各家编排</a></li><li><a href="12-durability-recovery.html">12 · 持久化与恢复：保证要落在失败窗口上</a></li><li><a href="13-extensibility-hooks.html">13 · 扩展性：能看到 ≠ 能改，能改请求 ≠ 能换 loop</a></li><li><a href="14-pi-durable.html">14 · pi-durable：从一次用户提交到 codemode 恢复</a></li><li><a href="15-deepagents-pi-agent-core.html">15 · DeepAgents → pi-agent-core 决策分析</a></li><li><a href="16-migration-interview.html">16 · DeepAgents → pi-agent-core：面试叙事稿</a></li><li><a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a></li><li><a href="18-community-pain-points.html" class="cur">18 · 社区痛点 → roadmap 优先级</a></li><li><a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a></li><li><a href="20-unconfirmed.html">20 · 证据边界：未能在代码中确认的点</a></li><li><a href="21-interview-brief.html">Agent Harness 源码对比 · 面试精简版</a></li></ul></details></nav>
 
-<blockquote>
+<div class="callout">
 <p>证据性质：GitHub issue 和 X 帖子代表报告者的经验，<strong>不是</strong>经过复现的缺陷结论；括号里的 👍 和评论数是收集时的快照。issue 时间窗约为 2026-09-05 至 10-16。“roadmap 优先级”一列是 <strong>PM 判断</strong>。</p>
-</blockquote>
+</div>
 <h2>共识</h2>
 <ul>
 <li><strong>痛点集中在“看不见”和“控不住”：</strong><ul>
@@ -108,4 +124,5 @@
 </ol>
 <h2>引用</h2>
 <p>GitHub issue 均为原始链接（表内）；X 帖子：
-1. [社区] https://x.com/omarsar0/status/2100219606405431391</p><hr><div class="pnav">← <a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> · <a href="index.html">总览</a> · <a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a> →</div></main></body></html>
+1. [社区] https://x.com/omarsar0/status/2100219606405431391</p><hr><div class="pnav">← <a href="17-evaluation-metrics.html">17 · 评估与指标：拆解“Agent 是否真的在更多场景下更深入的帮助到更多的人”</a> · <a href="index.html">总览</a> · <a href="19-interview-points.html">19 · 面试可讲的 8 个细节</a> →</div></main><script src="https://psylch.github.io/assets/report.js"></script>
+</body></html>
